@@ -1,22 +1,22 @@
-# gpt2.cpp
-**gpt2.cpp** is a simple, minimal, pure-C++ implementation of GPT-2 inference on CPU. It runs GPT2
-model inference on FP16 mode and experimental quantized int8 inference for large and xl models.
+# tinyllama.cpp
+**tinyllama.cpp** is a simple, minimal, pure-C++ implementation of tinyllama inference on CPU. It runs tinyllama
+model inference on FP16 mode. Quantized tinyllama implementations are on the way.
 AVX SIMD utilities for Intel chips are also implemented.
 
 
-## Install and Run GPT-2.
+## Install and Run Tinyllama.
 ```
-git clone https://github.com/iangitonga/gpt2.cpp.git
-cd gpt2.cpp/
-g++ -std=c++17 -O3 -ffast-math gpt2.cpp -o gpt2
-./gpt2 -p "Once upon a time" or ./gpt2 for a chat-interface.
+git clone https://github.com/iangitonga/tinyllama.cpp
+cd tinyllama.cpp/
+g++ -std=c++17 -O3 -ffast-math tinyllama.cpp -o tinyllama
+./tinyllama -p "Once upon a time"
 
 If you have an Intel CPU that supports AVX and f16c compile with the following
  command to achieve ~4x performance:
  
-g++ -std=c++17 -O3 -ffast-math -mavx -mf16c gpt2.cpp -o gpt2
-./gpt2 -p "Once upon a time"
+g++ -std=c++17 -O3 -ffast-math -mavx -mf16c tinyllama.cpp -o tinyllama
+./tinyllama -p "Once upon a time"
 
-Run ./gpt2 --help to see all available options.
+Run ./tinyllama --help to see all available options.
 
 ```

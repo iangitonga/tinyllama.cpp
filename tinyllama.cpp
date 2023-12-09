@@ -9,7 +9,7 @@ using namespace gten;
 
 struct TinyLLamaParams {
     const int n_vocab = 32003;
-    const int max_ctx = 128;
+    const int max_ctx = 2048;
     const int n_embd = 2048;
     const int n_ffn = 5632;
     const int n_layers = 22;
@@ -118,7 +118,8 @@ int main(int argc, char const *argv[])
     std::vector<int> toks = tokenizer.encode(prompt);
     toks.reserve(model.params.max_ctx);
 
-    for (int i = 0; i < model.params.max_ctx; i++)
+    const int niter = model.params.max_ctx - toks.size();
+    for (int i = 0; i < niter; i++)
     {
         Tensor tokens{toks.data(), {(int)toks.size()}, kInt32};
 

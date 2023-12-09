@@ -35,7 +35,8 @@ def _download_model(url, model_path):
                 break
 
             output.write(buffer)
-            show_progress(len(buffer), download_size)
+            progress_perc = int(len(buffer) / download_size * 100.0)
+            print(f"DOwnload Progress(%):  {progress_perc}")
 
 def download_model(model_name, dtype):
     # if dtype == "qint8":
