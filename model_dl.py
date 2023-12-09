@@ -28,7 +28,7 @@ def _download_model(url, model_path):
             output.write(buffer)
             progress_perc = int(len(buffer) / download_size * 100.0)
             # trick to make it work with jupyter.
-            print("\rDownload Progress(%):  ", progress_perc, "%", end="")
+            print(f"\rDownload Progress: {progress_perc}%", end="")
 
 def download_model(model_name, dtype):
     # if dtype == "qint8":
