@@ -1,0 +1,3 @@
+- Implement 8-bit quantized version.
+- Implement 4-bit quantized version.
+- Reduce acv memory footprint.
