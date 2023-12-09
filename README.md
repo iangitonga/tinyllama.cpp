@@ -9,14 +9,12 @@ AVX SIMD utilities for Intel chips are also implemented.
 git clone https://github.com/iangitonga/tinyllama.cpp
 cd tinyllama.cpp/
 g++ -std=c++17 -O3 -ffast-math tinyllama.cpp -o tinyllama
-./tinyllama -p "Once upon a time"
+./tinyllama -p "Give three tips for staying healthier?"
+```
 
 If you have an Intel CPU that supports AVX and f16c compile with the following
  command to achieve ~4x performance:
- 
+
+```
 g++ -std=c++17 -O3 -ffast-math -mavx -mf16c tinyllama.cpp -o tinyllama
-./tinyllama -p "Once upon a time"
-
-Run ./tinyllama --help to see all available options.
-
 ```

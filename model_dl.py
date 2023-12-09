@@ -16,15 +16,6 @@ DTYPES = (
 )
 
 
-def show_progress(cur_size, max_size):
-    ls = [" "] * 50
-    prog = int(cur_size / max_size * 50)
-    for i in range(prog):
-        ls[i] = "#"
-    print("Progress: [" + "".join(ls) + "]", end="\r", flush=True)
-    if cur_size == max_size:
-        print()
-
 def _download_model(url, model_path):
     print("Downloading ...")
     with request.urlopen(url) as source, open(model_path, "wb") as output:
@@ -36,7 +27,7 @@ def _download_model(url, model_path):
 
             output.write(buffer)
             progress_perc = int(len(buffer) / download_size * 100.0)
-            print(f"DOwnload Progress(%):  {progress_perc}")
+            print(f"\rDownload Progress(%):  {progress_perc}")
 
 def download_model(model_name, dtype):
     # if dtype == "qint8":
