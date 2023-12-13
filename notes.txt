@@ -1,4 +1,20 @@
 - Implement 8-bit quantized version.
 - Implement 4-bit quantized version.
 - Reduce acv memory footprint.
-- fix readme.
+- Implement better decoder.
+
+Check repetition:
+ Prompt: Give three tips for staying healthier.
+
+model.embed_tokens.weight
+model.norm.weight  // layers_output_norm
+lm_head.weight     // dim_to_vocab_size_weight
+model.layers.0.self_attn.q_proj.weight
+model.layers.0.self_attn.k_proj.weight
+model.layers.0.self_attn.v_proj.weight
+model.layers.0.self_attn.o_proj.weight
+model.layers.0.mlp.gate_proj.weight
+model.layers.0.mlp.up_proj.weight
+model.layers.0.mlp.down_proj.weight
+model.layers.0.input_layernorm.weight
+model.layers.0.post_attention_layernorm.weight

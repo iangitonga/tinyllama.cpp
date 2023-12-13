@@ -21,16 +21,18 @@ struct TinyLLamaParams {
 class TinyLlama {
 public:
     const TinyLLamaParams params = TinyLLamaParams{};
+    Dtype dtype_;
 
 public:
-    TinyLlama()
-        : tok_emb_{Embedding(params.n_vocab, params.n_embd, params.max_ctx, kFloat16)},
-          norm_{RMSNorm(params.n_embd, params.max_ctx)},
-          lm_head_{EmbeddingLinear(params.n_embd, params.n_vocab, params.max_ctx)}
+    TinyLlama(Dtype dtype, int qblock_size=64)
+        : dtype_{dtype},
+          tok_emb_{Embedding(params.n_vocab, params.n_embd, params.max_ctx, dtype, qblock_size)},
+          norm_{RMSNorm(params.n_embd, params.max_ctx, dtype, qblock_size)},
+          lm_head_{EmbeddingLinear{params.n_embd, params.n_vocab, params.max_ctx, dtype, qblock_size}}
     {
         blocks_.reserve(params.n_layers);
         for (int i = 0; i < params.n_layers; i++) {
-            blocks_.push_back(AttentionBlock(params.n_heads, params.n_embd, params.n_query_groups, params.n_ffn, params.max_ctx));
+            blocks_.push_back(AttentionBlock(params.n_heads, params.n_embd, params.n_query_groups, params.n_ffn, params.max_ctx, dtype, qblock_size));
         }
     }
 
@@ -79,42 +81,71 @@ output: 24115, 29880, 28579, 338, 263, 5332, 8578, 359, 13434, 322, 7766, 391, 1
         697, 310, 278, 1556, 4100, 13994, 297, 278, 5849, 310, 28579, 391, 6368, 322, 6944
 
 */
+/*
+
+./tinyllama -p PROMPT
+./tinyllama -q8 -p PROMPT
+
+*/
+
+static const char* usage_message = "USAGE:\n ./tinyllama [-q8] -p PROMPT\n option: -q8 for the quantized version of the model.\n";
+
 
 int main(int argc, char const *argv[])
 {
     if (argc < 3) {
-        std::cout << "Incorrect number of arguments.\n";
-        std::cout << "USAGE: ./tinyllama -p PROMPT\n";
+        std::cerr << "Incorrect number of arguments.\n";
+        std::cerr << usage_message;
         std::exit(EXIT_FAILURE);
     }
 
-    if (std::string_view(argv[1]) != "-p") {
-        std::cout << "Unrecognised option:" << argv[1] <<  "\n";
-        std::cout << "USAGE: ./tinyllama -p PROMPT\n";
-        std::exit(EXIT_FAILURE);
+    Dtype model_dtype = kFloat16;
+    std::string model_path = "models/tinyllama.fp16.gten";
+    std::string prompt = "";
+    for (int i = 1; i < argc; i++)
+    {
+        std::string_view arg{argv[i]};
+        if (arg == "-q8") {
+            model_dtype = kQint8;
+            model_path = "models/tinyllama.q8.gten";
+        } else if (arg == "-p") {
+            if (i + 1 < argc) {
+                prompt = argv[i + 1];
+                i += 1; // fast-forward
+            } else {
+                std::cerr << "error: Prompt not provided.\n" << usage_message << "\n";
+                std::exit(EXIT_FAILURE);
+            }
+        } else {
+            std::cerr << "error: Unknown argument: " << arg << "\n" << usage_message;
+            std::exit(EXIT_FAILURE);
+        }
     }
 
-    std::string prompt = argv[2];
+    if (prompt == "") {
+        std::cerr << "error: Prompt not provided.\n" << usage_message << "\n";
+        std::exit(EXIT_FAILURE);
+    }
+    
+    std::string model_id = model_dtype == kFloat16 ? "fp16" : "q8";
 
 #ifdef _WIN32
-    int res = std::system("python model_dl.py");
+    int res = std::system(("python model_dl.py " + model_id).c_str());
 #else
-    int res = std::system("python3 model_dl.py");
+    int res = std::system(("python3 model_dl.py " + model_id).c_str());
 #endif
     if (res != 0) {
         std::cerr << "Error: Failed to download the model. Check your network connectivity.\n";
         return -1;
     }
 
-    std::ifstream checkpoint{"models/tinyllama.fp16.gten", std::ios::binary};
+    std::ifstream checkpoint{model_path, std::ios::binary};
     GTEN_ASSERT(checkpoint.is_open());
 
-    TinyLlama model{};
+    TinyLlama model{model_dtype};
     model.load_from_ckpt(checkpoint);
 
     Tokenizer tokenizer{"tokenizer.bin", 32000};
-    // std::vector<int> toks = {1, 32001, 1404, 13}; 24115, 29880, 28579,
-    // std::vector<int> toks = {1, 32001, 1404, 13, 22110, 338, 8425, 28579, 29973, 32002, 29871, 13, 32001, 20255, 13};
     std::vector<int> toks = tokenizer.encode(prompt);
     toks.reserve(model.params.max_ctx);
 
@@ -141,7 +172,6 @@ int main(int argc, char const *argv[])
 
         const int maxi = max_index;
         if (maxi == tokenizer.eos) {
-            // std::cerr << "<EOT>";
             break;
         }
         const int prev_token = (i == 0) ? 1 : toks.back();
@@ -157,13 +187,29 @@ int main(int argc, char const *argv[])
 
 
 static inline void read_into_weight(
-    std::ifstream& fin, gten::Tensor& tensor, bool debug = false)
+    std::ifstream& fin, gten::Tensor& tensor, Dtype dtype)
 {
     std::string weight_name;
     int32_t weight_name_size;
     fin.read(reinterpret_cast<char*>(&weight_name_size), sizeof(weight_name_size));
     weight_name.resize(weight_name_size);
     fin.read(reinterpret_cast<char*>(weight_name.data()), weight_name_size);
+
+    if (dtype == kQint8)
+    {
+        GTEN_ASSERT(tensor.dtype() == kQint8);
+        
+        int32_t deltas_bytes;
+        fin.read(reinterpret_cast<char*>(&deltas_bytes), sizeof(deltas_bytes));
+        const int ndeltas = deltas_bytes / sizeof(Float16);
+
+        Qparams qparams = tensor.qparams();
+        const int expected_deltas = qparams.n_deltas();
+        GTEN_ASSERTM(ndeltas == expected_deltas, "expected %d but got %d deltas.", expected_deltas, ndeltas);
+
+        Float16* deltas = qparams.deltas();
+        fin.read(reinterpret_cast<char*>(deltas), deltas_bytes); /// deltas size.
+    }
 
     int32_t weight_payload_size;
     fin.read(reinterpret_cast<char*>(&weight_payload_size), sizeof(weight_payload_size));
@@ -199,50 +245,50 @@ void TinyLlama::load_from_ckpt(std::ifstream &ckpt)
     GTEN_ASSERTM(magic == expected_magic, "Magic number in the binary does not match the expected one.\n");
 
     read_layer_header(ckpt);
-    read_into_weight(ckpt, tok_emb_.weight);
+    read_into_weight(ckpt, tok_emb_.weight, dtype_);
 
     for (auto& block : blocks_)
     {
         // q_proj
         read_layer_header(ckpt);
-        read_into_weight(ckpt, block.attn.query.weight);
+        read_into_weight(ckpt, block.attn.query.weight, dtype_);
 
         // k_proj
         read_layer_header(ckpt);
-        read_into_weight(ckpt, block.attn.key.weight);
+        read_into_weight(ckpt, block.attn.key.weight, dtype_);
 
         // v_proj
         read_layer_header(ckpt);
-        read_into_weight(ckpt, block.attn.value.weight);
+        read_into_weight(ckpt, block.attn.value.weight, dtype_);
 
         // o_proj
         read_layer_header(ckpt);
-        read_into_weight(ckpt, block.attn.qkv_proj.weight);
+        read_into_weight(ckpt, block.attn.qkv_proj.weight, dtype_);
 
         // ffn_gate_proj
         read_layer_header(ckpt);
-        read_into_weight(ckpt, block.ffn_gate_proj.weight);
+        read_into_weight(ckpt, block.ffn_gate_proj.weight, dtype_);
 
         // ffn_up_proj
         read_layer_header(ckpt);
-        read_into_weight(ckpt, block.ffn_up_proj.weight);
+        read_into_weight(ckpt, block.ffn_up_proj.weight, dtype_);
 
-        // ffn_up_proj
+        // ffn_down_proj
         read_layer_header(ckpt);
-        read_into_weight(ckpt, block.ffn_down_proj.weight);
+        read_into_weight(ckpt, block.ffn_down_proj.weight, dtype_);
 
-        // ffn_up_proj
+        // attn_norm
         read_layer_header(ckpt);
-        read_into_weight(ckpt, block.attn_norm.weight);
+        read_into_weight(ckpt, block.attn_norm.weight, kFloat16);
 
-        // ffn_up_proj
+        // ffn_norm
         read_layer_header(ckpt);
-        read_into_weight(ckpt, block.ffn_norm.weight);
+        read_into_weight(ckpt, block.ffn_norm.weight, kFloat16);
     }
     
     read_layer_header(ckpt);
-    read_into_weight(ckpt, norm_.weight);
+    read_into_weight(ckpt, norm_.weight, kFloat16);
 
     read_layer_header(ckpt);
-    read_into_weight(ckpt, lm_head_.weight);
+    read_into_weight(ckpt, lm_head_.weight, dtype_);
 }

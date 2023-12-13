@@ -1,7 +1,6 @@
 # tinyllama.cpp
 **tinyllama.cpp** is a simple, minimal, pure-C++ implementation of tinyllama inference on CPU. It runs tinyllama
-model inference on FP16 mode. Quantized tinyllama implementations are on the way.
-AVX SIMD utilities for Intel chips are also implemented.
+model inference on FP16 and 8-bit quantized formats. AVX SIMD utilities for Intel chips are also implemented.
 
 
 ## Install and Run Tinyllama.
@@ -17,4 +16,9 @@ If you have an Intel CPU that supports AVX and f16c compile with the following
 
 ```
 g++ -std=c++17 -O3 -ffast-math -mavx -mf16c tinyllama.cpp -o tinyllama
+```
+
+To utilise the 8-bit quantized format, add the -q8 option to the command:
+```
+./tinyllama -p "Give three tips for staying healthier?"
 ```

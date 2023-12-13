@@ -33,7 +33,7 @@ private:
 
 class RMSNorm {
 public:
-    RMSNorm(int d_in, int max_ctx);
+    RMSNorm(int d_in, int max_ctx, Dtype dtype, int qblock_size = 0);
     Tensor forward(const Tensor& inp);
 
 public:
@@ -84,7 +84,7 @@ private:
 class EmbeddingLinear {
 public:
     EmbeddingLinear() = default;
-    EmbeddingLinear(int n_embd, int n_vocab, int max_ctx);
+    EmbeddingLinear(int n_embd, int n_vocab, int max_ctx, Dtype dtype, int qblock_size = 0);
     Tensor forward(const Tensor& inp);
 
 public:
@@ -95,7 +95,7 @@ public:
 class Multiply {
 public:
     Multiply() = default;
-    Multiply(int max_ctx, int d_out);
+    Multiply(int max_ctx, int d_out, Dtype dtype, int qblock_size = 0);
     Tensor forward(const Tensor& inp0, const Tensor& inp1);
 
 public:
@@ -105,7 +105,7 @@ public:
 class SiLU {
 public:
     SiLU() = default;
-    SiLU(int max_ctx, int d_out) : acv{Tensor({max_ctx, d_out}, kFloat16)} {}
+    SiLU(int max_ctx, int d_out, Dtype dtype, int qblock_size = 0);
     Tensor forward(const Tensor& inp);
 
 public:
@@ -115,6 +115,7 @@ public:
 
 class RotaryEmbedding {
 public:
+    RotaryEmbedding() {}
     Tensor forward(Tensor& inp);
 
 private:
@@ -124,7 +125,7 @@ private:
 
 class SelfAttention {
 public:
-    SelfAttention(int n_heads, int n_embed, int n_query_groups, int max_ctx);
+    SelfAttention(int n_heads, int n_embed, int n_query_groups, int max_ctx, Dtype dtype, int qblock_size = 0);
     Tensor forward(const Tensor& inp);
 
 public:
@@ -148,7 +149,7 @@ private:
 
 class AttentionBlock {
 public:
-    AttentionBlock(int n_heads, int d_embed, int n_query_groups, int n_mlp, int max_ctx);
+    AttentionBlock(int n_heads, int d_embed, int n_query_groups, int n_mlp, int max_ctx, Dtype dtype, int qblock_size = 0);
     Tensor forward(Tensor& inp);
     Tensor ffn_forward(const Tensor& inp);
 
