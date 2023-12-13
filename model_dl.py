@@ -7,13 +7,13 @@ from urllib import request
 
 MODELS_URLS = {
     "tinyllama": {
-        "float16": "https://huggingface.co/iangitonga/gten/resolve/main/tinyllama.fp16.gten",
+        "fp16": "https://huggingface.co/iangitonga/gten/resolve/main/tinyllama.fp16.gten",
         "q8": "https://huggingface.co/iangitonga/gten/resolve/main/tinyllama.q8.gten",
     }
 }
 
 DTYPES = (
-    "float16"
+    "fp16"
 )
 
 
@@ -33,6 +33,7 @@ def _download_model(url, model_path):
     print("")
 
 def download_model(dtype):
+    model_name = "tinyllama"
     if dtype == "q8":
         model_path = os.path.join("models", f"{model_name}.q8.gten")
     else:

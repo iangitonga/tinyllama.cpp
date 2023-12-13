@@ -20,5 +20,5 @@ g++ -std=c++17 -O3 -ffast-math -mavx -mf16c tinyllama.cpp -o tinyllama
 
 To utilise the 8-bit quantized format, add the -q8 option to the command:
 ```
-./tinyllama -p "Give three tips for staying healthier?"
+./tinyllama -q8 -p "Give three tips for staying healthier?"
 ```
