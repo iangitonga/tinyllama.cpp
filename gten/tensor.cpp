@@ -24,14 +24,14 @@ static void tensor_data_deleter(uint8_t* ptr) {
     std::free(ptr);
 }
 
-Tensor::Tensor(const std::vector<int>& shape, Dtype dtype, int qblock_size, bool zero_mem)
+Tensor::Tensor(const std::vector<int>& shape, Dtype dtype)
     : dtype_{dtype}
 {
     validate_shape(shape);
     const int numel = numel_from_shape(shape);
     const int alloc_bytes = numel * itemsize();
 
-    void* raw_data_ptr = zero_mem ? std::calloc(alloc_bytes, 1) : std::malloc(alloc_bytes);
+    void* raw_data_ptr = std::malloc(alloc_bytes);
     GTEN_ASSERTM(raw_data_ptr, "Failed to allocate %dMB of memory.", alloc_bytes / 1000000)
 
     data_ptr_ = std::shared_ptr<uint8_t>(static_cast<uint8_t*>(raw_data_ptr), tensor_data_deleter);
@@ -45,11 +45,7 @@ Tensor::Tensor(const std::vector<int>& shape, Dtype dtype, int qblock_size, bool
     if (dtype == kQint8 && ndims() == 2) {
         const int n_rows = size(0);
         const int n_cols = size(1);
-        // std::cout << qblock_size << ", ";
-        GTEN_ASSERT(qblock_size > 0);
-        GTEN_ASSERT(qblock_size % 8 == 0);
-        const int block_size = qblock_size;
-        qparams_ = Qparams(n_rows, n_cols, block_size);
+        qparams_ = Qparams(n_rows, n_cols);
         G_TensorMemAllocated += qparams_.nbytes();
     }
 }

@@ -3,6 +3,8 @@
 #include "tokenizer.h"
 
 #include <string_view>
+#include <random>
+#include <algorithm>
 
 using namespace gten;
 
@@ -22,28 +24,37 @@ class TinyLlama {
 public:
     const TinyLLamaParams params = TinyLLamaParams{};
     Dtype dtype_;
+    int n_ctx_;
 
 public:
-    TinyLlama(Dtype dtype, int qblock_size=64)
-        : dtype_{dtype},
-          tok_emb_{Embedding(params.n_vocab, params.n_embd, params.max_ctx, dtype, qblock_size)},
-          norm_{RMSNorm(params.n_embd, params.max_ctx, dtype, qblock_size)},
-          lm_head_{EmbeddingLinear{params.n_embd, params.n_vocab, params.max_ctx, dtype, qblock_size}}
+    TinyLlama(const int n_ctx, Dtype dtype)
+        : n_ctx_{n_ctx},
+          dtype_{dtype},
+          tok_emb_{Embedding(params.n_vocab, params.n_embd, n_ctx, dtype)},
+          norm_{RMSNorm(params.n_embd, n_ctx, dtype)},
+          lm_head_{EmbeddingLinear{params.n_embd, params.n_vocab, n_ctx, dtype}}
     {
         blocks_.reserve(params.n_layers);
         for (int i = 0; i < params.n_layers; i++) {
-            blocks_.push_back(AttentionBlock(params.n_heads, params.n_embd, params.n_query_groups, params.n_ffn, params.max_ctx, dtype, qblock_size));
+            blocks_.push_back(
+                AttentionBlock(params.n_heads, params.n_embd, params.n_query_groups, params.n_ffn, n_ctx, dtype)
+            );
         }
     }
 
-    Tensor logits(const Tensor& tokens) {
-        Tensor logits = tok_emb_.forward(tokens);
-
-        for (auto& block : blocks_) {
-            logits = block.forward(logits);
+    Tensor logits(const Tensor& tokens, const int start_pos=0) {
+        if (tokens.numel() > n_ctx_) {
+            std::cerr << "Number of prompt tokens (" << tokens.numel() << ") exceed provided maximum ctx size (" << n_ctx_ << ")\n";
+            std::exit(EXIT_FAILURE);
         }
 
-        logits = norm_.forward(logits);
+        Tensor logits = tok_emb_.forward(tokens, start_pos);
+
+        for (auto& block : blocks_) {
+            logits = block.forward(logits, start_pos);
+        }
+
+        logits = norm_.forward(logits, start_pos);
         logits = lm_head_.forward(logits);
 
         return logits;
@@ -57,6 +68,12 @@ private:
     EmbeddingLinear lm_head_;
     std::vector<AttentionBlock> blocks_;
 };
+
+
+void greedy_sample(
+    std::string& prompt, TinyLlama& model, Tokenizer& tokenizer, const int n_predict);
+void topk_sample(
+    std::string& prompt, TinyLlama& model, Tokenizer& tokenizer, const int n_predict, const float temp, const int topk);
 
 
 /*
@@ -88,27 +105,50 @@ output: 24115, 29880, 28579, 338, 263, 5332, 8578, 359, 13434, 322, 7766, 391, 1
 
 */
 
-static const char* usage_message = "USAGE:\n ./tinyllama [-q8] -p PROMPT\n option: -q8 for the quantized version of the model.\n";
+static const char *usage_message = R"(
+USAGE:
+./tinyllama [options] -p PROMPT  for a single prompt or
+./tinyllama [options] for a chat interface. 
+
+Optional args. 
+-f16 :     Use float-16 model and inference (2.2GB). [default]
+-q8  :     Use 8-bit quantized model (1.1GB) and inference.
+--temp T : Temperature to use during sampling. It must be greater than 0. [default=0.9].
+--npred  N : Number of tokens to generate. Minimum is 1 and max is 2048. [default=512].
+--topk K : Top tokens to randomly select from during prediction. [default=40].
+
+Examples:
+  ./tinyllama
+  ./tinyllama -q8 --temp 0.5
+  ./tinyllama -p "Give three tips for staying healthier." 
+)";
 
 
 int main(int argc, char const *argv[])
 {
-    if (argc < 3) {
-        std::cerr << "Incorrect number of arguments.\n";
-        std::cerr << usage_message;
-        std::exit(EXIT_FAILURE);
-    }
-
     Dtype model_dtype = kFloat16;
     std::string model_path = "models/tinyllama.fp16.gten";
     std::string prompt = "";
+    int n_predict = 512;
+    bool use_greedy_sampler = false;
+    float sampling_temp = 0.9f;
+    int topk = 40;
+
     for (int i = 1; i < argc; i++)
     {
         std::string_view arg{argv[i]};
-        if (arg == "-q8") {
+        if (arg == "--help" || arg == "-h") {
+            std::cout << usage_message << "\n";
+            return 0;
+        }
+        if (arg == "-f16") {
+            continue;
+        }
+        else if (arg == "-q8") {
             model_dtype = kQint8;
             model_path = "models/tinyllama.q8.gten";
-        } else if (arg == "-p") {
+        }
+        else if (arg == "-p") {
             if (i + 1 < argc) {
                 prompt = argv[i + 1];
                 i += 1; // fast-forward
@@ -116,15 +156,68 @@ int main(int argc, char const *argv[])
                 std::cerr << "error: Prompt not provided.\n" << usage_message << "\n";
                 std::exit(EXIT_FAILURE);
             }
-        } else {
+        } else if (arg == "-greedy") {
+           use_greedy_sampler = true;
+        } else if (arg == "--npred") {
+            if (argc <= i+1) {
+                std::cerr << "npred value is missing.\n";
+                return -1;
+            }
+            int npred;
+            try {
+                npred = std::stoi(argv[i+1]);
+            } catch (...) {
+                std::cerr << "Invalid npred value.\n";
+                return -1;
+            }
+            if (npred < 1 || npred > 2048) {
+                std::cerr << "npred must be greater than 1 and less than 2048.\n";
+                return -1;
+            }
+            n_predict = std::max(npred, 2048);
+            i += 1; // skip len param
+        } else if (arg == "--temp") {
+            if (argc <= i+1) {
+                std::cerr << "temp value is missing.\n";
+                return -1;
+            }
+            float arg_temp;
+            try {
+                arg_temp = std::stof(argv[i+1]);
+            } catch (...) {
+                std::cerr << "Invalid temp value \n";
+                return -1;
+            }
+            if (arg_temp <= 0.0f) {
+                std::cerr << "temp value must be greater than zero.\n";
+                return -1;
+            }
+            sampling_temp = arg_temp;
+            i += 1; // skip parsed temp.
+        } else if (arg == "--topk") {
+            if (argc <= i+1) {
+                std::cerr << "topk value is missing.\n";
+                return -1;
+            }
+            int arg_top_k;
+            try {
+                arg_top_k = std::stoi(argv[i+1]);
+            } catch (...) {
+                std::cerr << "Invalid topk value.\n";
+                return -1;
+            }
+            const int n_vocab = 32003;
+            if (arg_top_k < 1 || arg_top_k > 32003) {
+                std::cerr << "topk must be gte 1 and lte " << 32003 << ".\n";
+                return -1;
+            }
+            topk = arg_top_k;
+            i += 1;
+        }
+        else {
             std::cerr << "error: Unknown argument: " << arg << "\n" << usage_message;
             std::exit(EXIT_FAILURE);
         }
-    }
-
-    if (prompt == "") {
-        std::cerr << "error: Prompt not provided.\n" << usage_message << "\n";
-        std::exit(EXIT_FAILURE);
     }
     
     std::string model_id = model_dtype == kFloat16 ? "fp16" : "q8";
@@ -142,45 +235,35 @@ int main(int argc, char const *argv[])
     std::ifstream checkpoint{model_path, std::ios::binary};
     GTEN_ASSERT(checkpoint.is_open());
 
-    TinyLlama model{model_dtype};
+    TinyLlama model{n_predict, model_dtype};
     model.load_from_ckpt(checkpoint);
 
     Tokenizer tokenizer{"tokenizer.bin", 32000};
-    std::vector<int> toks = tokenizer.encode(prompt);
-    toks.reserve(model.params.max_ctx);
+    
+    if (prompt == "") {
+        std::cout << "Chat interface. Write your prompt and press enter to submit. Enter q or press ctrl+c to quit.\n";
+        std::string prompt;
+        while (true) {
+            std::cerr << "\n\n[You]: ";
+            std::getline(std::cin, prompt);
+            if (prompt == "q")
+                break;
 
-    const int niter = model.params.max_ctx - toks.size();
-    for (int i = 0; i < niter; i++)
-    {
-        Tensor tokens{toks.data(), {(int)toks.size()}, kInt32};
-
-        Tensor logits = model.logits(tokens);
-
-        const int n_ctx = logits.size(0);
-        const float *logits_data = logits.data_ptr<float>();
-        const int logits_size = model.params.n_vocab;
-
-        float max_prob = -std::numeric_limits<float>::infinity();
-        int max_index = 0;
-        for (int j = 0; j < logits_size; ++j){
-            const float val = logits_data[j];
-            if (val > max_prob) {
-                max_prob = val;
-                max_index = j;
+            std::cerr << "\n[Tinyllama-Chat]: \n\n";
+            if (use_greedy_sampler) {
+                greedy_sample(prompt, model, tokenizer, n_predict);
+            } else {
+                topk_sample(prompt, model, tokenizer, n_predict, sampling_temp, topk);
             }
         }
-
-        const int maxi = max_index;
-        if (maxi == tokenizer.eos) {
-            break;
-        }
-        const int prev_token = (i == 0) ? 1 : toks.back();
-        std::cerr << tokenizer.decode(prev_token, maxi);
-
-        toks.push_back(maxi);
     }
-    
-    std::cerr << '\n';
+    else {
+        if (use_greedy_sampler) {
+            greedy_sample(prompt, model, tokenizer, n_predict);
+        } else {
+            topk_sample(prompt, model, tokenizer, n_predict, sampling_temp, topk);
+        }
+    }
 
     return 0;
 }
@@ -291,4 +374,115 @@ void TinyLlama::load_from_ckpt(std::ifstream &ckpt)
 
     read_layer_header(ckpt);
     read_into_weight(ckpt, lm_head_.weight, dtype_);
+}
+
+
+void greedy_sample(std::string& prompt, TinyLlama& model, Tokenizer& tokenizer, const int n_predict)
+{
+    std::vector<int> tokens = tokenizer.encode(prompt);
+    tokens.reserve(n_predict);
+
+    const int n_pred_tokens = n_predict - tokens.size();
+    for (int i = 0; i < n_pred_tokens; i++)
+    {
+        Tensor input{tokens.data(), {(int)tokens.size()}, kInt32};
+
+        const int start_pos = (i == 0) ? 0 : input.numel() - 1; 
+        Tensor logits = model.logits(input, start_pos);
+
+        const int n_ctx = logits.size(0);
+        const float *logits_data = logits.data_ptr<float>();
+        const int logits_size = model.params.n_vocab;
+
+        float max_prob = -std::numeric_limits<float>::infinity();
+        int max_index = 0;
+        for (int j = 0; j < logits_size; ++j){
+            const float val = logits_data[j];
+            if (val > max_prob) {
+                max_prob = val;
+                max_index = j;
+            }
+        }
+
+        const int maxi = max_index;
+        if (maxi == tokenizer.eos) {
+            // std::cerr << "<EOT>";
+            break;
+        }
+        const int prev_token = (i == 0) ? 1 : tokens.back();
+        std::cerr << tokenizer.decode(prev_token, maxi);
+
+        tokens.push_back(maxi);
+    }
+    
+    std::cerr << '\n';
+}
+
+void topk_sample(std::string& prompt, TinyLlama& model, Tokenizer& tokenizer, const int n_predict, const float temp, const int top_k)
+{
+    std::random_device rd;
+    std::mt19937 gen(rd());
+
+    std::vector<int> tokens = tokenizer.encode(prompt);
+    tokens.reserve(n_predict);
+    const int logits_size = model.params.n_vocab;
+    std::vector<std::pair<double, int>> logits_probs;
+    logits_probs.reserve(logits_size);
+
+    const int eot_token = tokenizer.eos;
+
+    const int n_pred_tokens = n_predict - tokens.size();
+    for (int i = 0; i < n_pred_tokens; i++)
+    {
+        gten::Tensor input{tokens.data(), {(int)tokens.size()}, gten::kInt32};
+        const int start_pos = (i == 0) ? 0 : input.numel() - 1; 
+        gten::Tensor logits = model.logits(input, start_pos);
+        const float* logits_data = logits.data_ptr<float>();
+
+        logits_probs.clear();
+        for (int j = 0; j < logits_size; ++j) {
+            logits_probs.push_back(std::make_pair((double)logits_data[j] / temp, j));
+        }
+        
+        // Select top k elements.
+        std::partial_sort(
+                logits_probs.begin(),
+                logits_probs.begin() + top_k,
+                logits_probs.end(),
+                [](const std::pair<double, int> &rhs, const std::pair<double, int> &lhs) {
+            return rhs.first > lhs.first;
+        });
+        logits_probs.resize(top_k);
+        
+        // compute softmax
+        double sum_exp = 0;
+        for (int j = 0; j < top_k; ++j)
+        {
+            logits_probs[j].first = std::exp(logits_probs[j].first);
+            sum_exp += logits_probs[j].first;
+        }
+        for (int j = 0; j < top_k; ++j)
+            logits_probs[j].first = logits_probs[j].first / sum_exp;
+
+        std::vector<double> probs(logits_size, 0.0);
+        for (int j = 0; j < top_k; j++)
+        {
+            const auto &prob_pair = logits_probs[j];
+            probs[prob_pair.second] = prob_pair.first;
+        }
+
+        std::discrete_distribution dist(probs.begin(), probs.end());
+        uint32_t maxi = dist(gen);
+        if (maxi == eot_token) {
+            // std::cerr << "<EOT>";
+            break;
+        }
+
+        const int prev_token = (i == 0) ? 1 : tokens.back();
+        std::cerr << tokenizer.decode(prev_token, maxi);
+
+        tokens.push_back(maxi);
+    }
+
+    std::cerr << "\n";
 }

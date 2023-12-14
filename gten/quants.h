@@ -9,17 +9,20 @@
 
 namespace gten {
 
+namespace globs {
+static const int q8_block_size = 64;
+}
+
 class Qparams {
 public:
     Qparams() = default;
 
-    Qparams(int n_rows, int n_cols, int block_size) {
-        GTEN_ASSERT(n_cols % block_size == 0);
+    Qparams(int n_rows, int n_cols) {
+        GTEN_ASSERT(n_cols % globs::q8_block_size == 0);
 
         n_rows_ = n_rows;
         n_cols_ = n_cols;
-        block_size_ = block_size;
-        blocks_per_row_ = n_cols / block_size;
+        blocks_per_row_ = n_cols / globs::q8_block_size;
         const int n_deltas = n_rows_ * blocks_per_row_;
         deltas_ = std::shared_ptr<Float16[]>(new Float16[n_deltas]);
     }
@@ -48,13 +51,11 @@ public:
     int nbytes() const { return n_rows_ * blocks_per_row_ * sizeof(Float16); }
 
     int n_deltas() const { return n_rows_ * blocks_per_row_; }
-    int block_size() const { return block_size_; }
     int blocks_per_row() const { return blocks_per_row_; }
 
 private:
     int n_rows_ = 0;
     int n_cols_ = 0;
-    int block_size_ = 0;
     int blocks_per_row_ = 0;
     std::shared_ptr<Float16[]> deltas_;
 };
@@ -124,7 +125,7 @@ inline float dequantize(Qint8 x, float delta) {
 
 inline void quantize_row(int row_idx, const float* x, Qparams& out_qparams, Qint8* out) {
     const int blocks_per_row = out_qparams.blocks_per_row();
-    const int block_size = out_qparams.block_size();
+    const int block_size = globs::q8_block_size;
 
     Float16* out_row_deltas = out_qparams.row_deltas(row_idx);
 
@@ -151,7 +152,7 @@ inline void quantize_row(int row_idx, const float* x, Qparams& out_qparams, Qint
 
 inline void quantize_col(int row_idx, const float* x, Qparams& out_qparams, Qint8* out) {
     const int blocks_per_row = out_qparams.blocks_per_row();
-    const int block_size = out_qparams.block_size();
+    const int block_size = globs::q8_block_size;
 
     Float16* out_row_deltas = out_qparams.row_deltas(row_idx);
 
@@ -178,7 +179,7 @@ inline void quantize_col(int row_idx, const float* x, Qparams& out_qparams, Qint
 
 inline void dequantize_row(int row_idx, const Qint8* x, const Qparams& x_qparams, float* out) {
     const int blocks_per_row = x_qparams.blocks_per_row();
-    const int block_size = x_qparams.block_size();
+    const int block_size = globs::q8_block_size;
 
     const Float16* out_row_deltas = x_qparams.row_deltas(row_idx);
 
@@ -195,7 +196,7 @@ inline void dequantize_row(int row_idx, const Qint8* x, const Qparams& x_qparams
 // Dequantizes a contiguos column x and stores the result in out.
 inline void dequantize_col(int col_idx, const Qint8* x, const Qparams& x_qparams, float* out, int size) {
     const int blocks_per_row = x_qparams.blocks_per_row();
-    const int block_size = x_qparams.block_size();
+    const int block_size = globs::q8_block_size;
 
     const Float16* deltas = x_qparams.deltas();
 

@@ -11,51 +11,43 @@ namespace gten {
 class Embedding {
 public:
     Embedding() = default;
-    Embedding(int n_vocab, int d_embed, int max_ctx, Dtype dtype, int qblock_size = 0);
+    Embedding(int n_vocab, int d_embed, int max_ctx, Dtype dtype);
 
     /// Returns the embeddings of the given tokens. The input tensor must be of shape
     /// (n_ctx,) and the output tensor is of shape (n_ctx, d_embed).
-    Tensor forward(const Tensor& tokens);
-
+    Tensor forward(const Tensor& tokens, const int start_pos = 0);
     int64_t emb_time() const { return exec_time_emb_ms_; }
-    void reset_acv_cache() { emb_acv_cached_=false; }
 
 public:
     Tensor weight;
     Tensor emb_acv;
 
 private:
-    bool emb_acv_cached_{false};
-    int max_ctx_;
     int64_t exec_time_emb_ms_{0};
 };
 
 
 class RMSNorm {
 public:
-    RMSNorm(int d_in, int max_ctx, Dtype dtype, int qblock_size = 0);
-    Tensor forward(const Tensor& inp);
+    RMSNorm(int d_in, int max_ctx, Dtype dtype);
+    Tensor forward(const Tensor& inp, const int start_pos = 0);
 
 public:
     Tensor weight;
     Tensor acv;
-    bool acv_cached_{false};
 };
 
 class Residual {
 public:
     Residual() = default;
-    Residual(int max_ctx, int d_out, Dtype dtype, int qblock_size = 0);
-    Tensor forward(const Tensor& inp0, const Tensor& inp1);
+    Residual(int max_ctx, int d_out, Dtype dtype);
+    Tensor forward(const Tensor& inp0, const Tensor& inp1, const int start_pos = 0);
     int64_t time() const noexcept { return exec_time_ms_; }
-    void reset_acv_cache() { acv_cached_=false; }
 
 public:
     Tensor acv;
 
 private:
-    int max_ctx_;
-    bool acv_cached_{false};
     int64_t exec_time_ms_{0};
 };
 
@@ -64,18 +56,16 @@ private:
 class Linear {
 public:
     Linear() = default;
-    Linear(int d_in, int d_out, int max_ctx, Dtype dtype, int qblock_size = 0);
-    Tensor forward(const Tensor& inp);
-    Tensor forward_transposed(const Tensor& inp);
+    Linear(int d_in, int d_out, int max_ctx, Dtype dtype);
+    Tensor forward(const Tensor& inp, const int start_pos = 0);
+    Tensor forward_transposed(const Tensor& inp, const int start_pos = 0);
     int64_t time() const noexcept { return exec_time_ms_; }
-    void reset_acv_cache() { acv_cached_=false; }
 
 public:
     Tensor weight;
     Tensor acv;
 
 private:
-    bool acv_cached_{false};
     int64_t exec_time_ms_{0};
     int max_ctx_;
     bool has_bias_;
@@ -84,7 +74,7 @@ private:
 class EmbeddingLinear {
 public:
     EmbeddingLinear() = default;
-    EmbeddingLinear(int n_embd, int n_vocab, int max_ctx, Dtype dtype, int qblock_size = 0);
+    EmbeddingLinear(int n_embd, int n_vocab, int max_ctx, Dtype dtype);
     Tensor forward(const Tensor& inp);
 
 public:
@@ -95,38 +85,42 @@ public:
 class Multiply {
 public:
     Multiply() = default;
-    Multiply(int max_ctx, int d_out, Dtype dtype, int qblock_size = 0);
-    Tensor forward(const Tensor& inp0, const Tensor& inp1);
+    Multiply(int max_ctx, int d_out, Dtype dtype, const bool inplace = false);
+    Tensor forward(Tensor& inp0, const Tensor& inp1, const int start_pos=0);
 
 public:
     Tensor acv;
+
+private:
+    bool inplace_{false};
 };
 
 class SiLU {
 public:
     SiLU() = default;
-    SiLU(int max_ctx, int d_out, Dtype dtype, int qblock_size = 0);
-    Tensor forward(const Tensor& inp);
+    SiLU(int max_ctx, int d_out, Dtype dtype, const bool inplace=false);
+    Tensor forward(Tensor& inp, const int start_pos=0);
 
 public:
     Tensor acv;
+    bool inplace_{false};
 };
 
 
 class RotaryEmbedding {
 public:
-    RotaryEmbedding() {}
-    Tensor forward(Tensor& inp);
+    RotaryEmbedding(const int d_head, const bool inplace=true);
+    Tensor forward(Tensor& inp, const int start_pos=0);
 
 private:
-    bool acv_cached_{false};
+    int d_head_;
 };
 
 
 class SelfAttention {
 public:
-    SelfAttention(int n_heads, int n_embed, int n_query_groups, int max_ctx, Dtype dtype, int qblock_size = 0);
-    Tensor forward(const Tensor& inp);
+    SelfAttention(int n_heads, int n_embed, int n_query_groups, int max_ctx, Dtype dtype);
+    Tensor forward(const Tensor& inp, const int start_pos);
 
 public:
     Linear query;
@@ -143,15 +137,15 @@ private:
     int max_ctx_;
 
 private:
-    Tensor masked_qkv_attn(const Tensor &q, const Tensor &k, const Tensor &v);
+    Tensor masked_qkv_attn(const Tensor& q, const Tensor& k, const Tensor& v, const int start_pos);
 };
 
 
 class AttentionBlock {
 public:
-    AttentionBlock(int n_heads, int d_embed, int n_query_groups, int n_mlp, int max_ctx, Dtype dtype, int qblock_size = 0);
-    Tensor forward(Tensor& inp);
-    Tensor ffn_forward(const Tensor& inp);
+    AttentionBlock(int n_heads, int d_embed, int n_query_groups, int n_mlp, int max_ctx, Dtype dtype);
+    Tensor forward(Tensor& inp, const int start_pos);
+    Tensor ffn_forward(const Tensor& inp, const int start_pos=0);
 
 public:
     RMSNorm attn_norm;

@@ -20,7 +20,7 @@ static int64_t G_TensorMemAllocated = 0;
 class Tensor {
 public:
     Tensor() = default;
-    Tensor(const std::vector<int>& shape, Dtype dtype, int qblock_size = 0, bool zero_mem = false);
+    Tensor(const std::vector<int>& shape, Dtype dtype);
     Tensor(const void* data_ptr, const std::vector<int>& shape, Dtype dtype);
     Tensor(const Tensor& rhs) = default;
     Tensor(Tensor&& rhs) = default;
