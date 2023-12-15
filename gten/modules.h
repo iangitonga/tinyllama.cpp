@@ -16,14 +16,11 @@ public:
     /// Returns the embeddings of the given tokens. The input tensor must be of shape
     /// (n_ctx,) and the output tensor is of shape (n_ctx, d_embed).
     Tensor forward(const Tensor& tokens, const int start_pos = 0);
-    int64_t emb_time() const { return exec_time_emb_ms_; }
 
 public:
     Tensor weight;
     Tensor emb_acv;
-
-private:
-    int64_t exec_time_emb_ms_{0};
+    int64_t exec_time{0};
 };
 
 
@@ -35,6 +32,7 @@ public:
 public:
     Tensor weight;
     Tensor acv;
+    int64_t exec_time{0};
 };
 
 class Residual {
@@ -42,13 +40,10 @@ public:
     Residual() = default;
     Residual(int max_ctx, int d_out, Dtype dtype);
     Tensor forward(const Tensor& inp0, const Tensor& inp1, const int start_pos = 0);
-    int64_t time() const noexcept { return exec_time_ms_; }
 
 public:
     Tensor acv;
-
-private:
-    int64_t exec_time_ms_{0};
+    int64_t exec_time{0};
 };
 
 
@@ -59,14 +54,13 @@ public:
     Linear(int d_in, int d_out, int max_ctx, Dtype dtype);
     Tensor forward(const Tensor& inp, const int start_pos = 0);
     Tensor forward_transposed(const Tensor& inp, const int start_pos = 0);
-    int64_t time() const noexcept { return exec_time_ms_; }
 
 public:
     Tensor weight;
     Tensor acv;
+    int64_t exec_time{0};
 
 private:
-    int64_t exec_time_ms_{0};
     int max_ctx_;
     bool has_bias_;
 };
@@ -80,6 +74,7 @@ public:
 public:
     Tensor weight;
     Tensor acv;
+    int64_t exec_time{0};
 };
 
 class Multiply {
@@ -90,6 +85,7 @@ public:
 
 public:
     Tensor acv;
+    int64_t exec_time{0};
 
 private:
     bool inplace_{false};
@@ -104,6 +100,7 @@ public:
 public:
     Tensor acv;
     bool inplace_{false};
+    int64_t exec_time{0};
 };
 
 
@@ -111,6 +108,9 @@ class RotaryEmbedding {
 public:
     RotaryEmbedding(const int d_head, const bool inplace=true);
     Tensor forward(Tensor& inp, const int start_pos=0);
+
+public:
+    int64_t exec_time{0};
 
 private:
     int d_head_;
@@ -129,8 +129,9 @@ public:
     Linear qkv_proj;
     Tensor qk_acv;
     Tensor qkv_acv;
-    RotaryEmbedding qrot;
-    RotaryEmbedding krot;
+    RotaryEmbedding q_rope;
+    RotaryEmbedding k_rope;
+    int64_t exec_time_attn{0};
 
 private:
     int32_t n_heads_;

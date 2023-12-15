@@ -13,7 +13,6 @@
 namespace gten {
 namespace ops {
 
-
 // Stores buffers required by ops.
 class OpsState {
 public:
@@ -38,32 +37,58 @@ private:
 static const OpsState g_ops_state = OpsState();
 
 
-static void vec_add_f16(const Float16* a, const Float16* b, Float16* out, int vec_size)
+void row_to_float(const Tensor& x, const int idx, float* out_buf)
 {
-#ifdef GTEN_SIMD_AVX
-    const int simd_vec_size = (vec_size / GTEN_SIMD_VEC_SIZE) * GTEN_SIMD_VEC_SIZE;
+    // GTEN_ASSERT(x.is_2d());
+    // GTEN_ASSERT idx < n_rows
 
-    for (int i = 0; i < simd_vec_size; i += GTEN_SIMD_VEC_SIZE) {
-        Vec_f32x8 x0 = vec_f32x8_load(a + i);
-        Vec_f32x8 x1 = vec_f32x8_load(b + i);
-        Vec_f32x8 x_sum = vec_f32x8_add(x0, x1);
-        vec_f32x8_store(x_sum, out + i);
+    switch (x.dtype())
+    {
+        case kFloat16: {
+            const int rowsize = x.dimsize(1);
+            const Float16* x_data = x.data_ptr<Float16>() + idx * rowsize;
+            for (int i = 0; i < rowsize; i++) {
+                out_buf[i] = fp16_to_fp32(x_data[i]);
+            }
+            break;
+        }
+        case kQint8: {
+            const int rowsize = x.dimsize(1);
+            const Qint8* x_data = x.data_ptr<Qint8>() + idx * rowsize;
+            dequantize_row(idx, x_data, x.qparams(), out_buf);
+            break;
+        }
+        default: {
+            GTEN_ASSERT(false);
+            break;
+        }
     }
+}
 
-    for (int i = simd_vec_size; i < vec_size; i++) {
-        const float x0 = fp16_to_fp32(a[i]);
-        const float x1 = fp16_to_fp32(b[i]);
-        out[i] = fp32_to_fp16(x0 + x1);
+
+void row_from_float(float* x, const int idx, Tensor& out)
+{
+    switch (out.dtype())
+    {
+        case kFloat16: {
+            const int rowsize = out.dimsize(1);
+            Float16* out_data = out.data_ptr<Float16>() + idx * rowsize;
+            for (int i = 0; i < rowsize; i++) {
+                out_data[i] = fp32_to_fp16(x[i]);
+            }
+            break;
+        }
+        case kQint8: {
+            const int rowsize = out.dimsize(1);
+            Qint8* out_data = out.data_ptr<Qint8>() + idx * rowsize;
+            quantize_row(idx, x, out.qparams(), out_data);
+            break;
+        }
+        default: {
+            GTEN_ASSERT(false);
+            break;
+        }
     }
-#else
-
-    for (int i = 0; i < vec_size; i++) {
-        const float x0 = fp16_to_fp32(a[i]);
-        const float x1 = fp16_to_fp32(b[i]);
-        out[i] = fp32_to_fp16(x0 + x1);
-    }
-
-#endif
 }
 
 
@@ -192,9 +217,11 @@ static float vec_dot_product_f32(const float* vec_a, const float* vec_b, int vec
 }
 
 
-static float vec_dot_product_q8(const Qint8* a, const Float16* a_ds, const Qint8* b, const Float16* b_ds, int blk_size, int vec_size)
+static float vec_dot_product_q8(const Qint8* a, const Float16* a_ds, const Qint8* b, const Float16* b_ds, const int vec_size)
 {
     // GTEN_ASSERTM(vec_size % blk_size == 0, "row size: %d is incompatible with block size: %d", vec_size, blk_size);
+
+    int blk_size = globs::q8_block_size;
 
     // Ensure that when the input vector is inside a block rather than the
     // vector having multiple blocks inside it, we still make the right computations.
@@ -298,10 +325,10 @@ static void tensor_row_index_impl_f16(const Tensor& src, const Tensor& indices, 
     const Float16* w_data = src.data_ptr<Float16>();
     const int* indices_data = indices.data_ptr<int>();
     Float16* out_data = out.data_ptr<Float16>();
-    const int rowsize = src.size(1);
+    const int rowsize = src.dimsize(1);
     const size_t rowsizebytes = rowsize * src.itemsize();
 
-    const int n_ctx = indices.size(0);
+    const int n_ctx = indices.dimsize(0);
     for (int i = start_pos; i < indices.numel(); i++) {
         const void* src_row_data = w_data + indices_data[i] * rowsize;
         void* out_row_data = out_data + i * rowsize;
@@ -315,7 +342,7 @@ static void tensor_row_index_impl_q8(const Tensor& src, const Tensor& indices, T
     const int* indices_data = indices.data_ptr<int>();
     Qint8* out_data = out.data_ptr<Qint8>();
 
-    const int rowsize = src.size(1);
+    const int rowsize = src.dimsize(1);
     const size_t rowsizebytes = rowsize * src.itemsize();
 
     const Qparams& w_qparams = src.qparams();
@@ -324,7 +351,7 @@ static void tensor_row_index_impl_q8(const Tensor& src, const Tensor& indices, T
     const int block_size = globs::q8_block_size;
     const int n_blocks = rowsize / block_size;
 
-    const int n_ctx = indices.size(0);
+    const int n_ctx = indices.dimsize(0);
     for (int i = start_pos; i < indices.numel(); i++) {
         const Qint8* src_row_data = src_data + indices_data[i] * rowsize;
         Qint8* dest_row_data = out_data + i * rowsize;
@@ -348,8 +375,8 @@ void token_embed(const Tensor& weight, const Tensor& tokens, Tensor& out, const 
 {
     GTEN_ASSERT(weight.is_2d());
     GTEN_ASSERT(tokens.is_1d() && tokens.dtype() == kInt32);
-    const int n_ctx = tokens.size(0);
-    const int n_embd = weight.size(1);
+    const int n_ctx = tokens.dimsize(0);
+    const int n_embd = weight.dimsize(1);
     GTEN_ASSERT(out.shape_eq({n_ctx, n_embd}));
     GTEN_ASSERT(weight.dtype() == out.dtype());
 
@@ -366,14 +393,12 @@ static void emb_matmul_impl_q8(const Tensor& x, const Tensor& w, Tensor& out)
     const Qint8* w_data = w.data_ptr<Qint8>();
     float* out_data = out.data_ptr<float>();
 
-    const int n_ctx = x.size(0);
-    const int n_embd = x.size(1);
-    const int n_vocab = w.size(0);
+    const int n_ctx = x.dimsize(0);
+    const int n_embd = x.dimsize(1);
+    const int n_vocab = w.dimsize(0);
 
     const Qparams& x_qparams = x.qparams();
     const Qparams& w_qparams = w.qparams();
-
-    const int block_size = globs::q8_block_size;
 
 #ifdef GTEN_OMP
     #pragma omp parallel for collapse(2)
@@ -385,7 +410,7 @@ static void emb_matmul_impl_q8(const Tensor& x, const Tensor& w, Tensor& out)
             const Qint8* w_row_data = w_data + wrow * n_embd;
             const Float16* w_row_deltas = w_qparams.row_deltas(wrow);
 
-            const float dot_prod = vec_dot_product_q8(x_row_data, x_row_deltas, w_row_data, w_row_deltas, block_size, n_embd);
+            const float dot_prod = vec_dot_product_q8(x_row_data, x_row_deltas, w_row_data, w_row_deltas, n_embd);
             out_data[wrow] = dot_prod;
         }
     }
@@ -397,9 +422,9 @@ static void emb_matmul_impl_f16(const Tensor& x, const Tensor& w, Tensor& out)
     const Float16* w_data = w.data_ptr<Float16>();
     float* out_data = out.data_ptr<float>();
 
-    const int n_ctx = x.size(0);
-    const int n_embd = x.size(1);
-    const int n_vocab = w.size(0);
+    const int n_ctx = x.dimsize(0);
+    const int n_embd = x.dimsize(1);
+    const int n_vocab = w.dimsize(0);
 
 #ifdef GTEN_OMP
     #pragma omp parallel for collapse(2)
@@ -421,10 +446,10 @@ static void emb_matmul_impl_f16(const Tensor& x, const Tensor& w, Tensor& out)
 /// @param out Output tensor of shape (n_vocab).
 static void emb_matmul(const Tensor& x, const Tensor& weight, Tensor& out) {
     GTEN_ASSERT(x.is_2d());
-    const int n_embd = x.size(1);
-    GTEN_ASSERT(weight.is_2d() && weight.size(1) == n_embd);
-    const int n_vocab = weight.size(0);
-    GTEN_ASSERT(out.is_1d() && out.dtype() == kFloat32 && out.size(0) == n_vocab);
+    const int n_embd = x.dimsize(1);
+    GTEN_ASSERT(weight.is_2d() && weight.dimsize(1) == n_embd);
+    const int n_vocab = weight.dimsize(0);
+    GTEN_ASSERT(out.is_1d() && out.dtype() == kFloat32 && out.dimsize(0) == n_vocab);
 
     if (weight.is_quantized()) {
         emb_matmul_impl_q8(x, weight, out);
@@ -442,9 +467,9 @@ static void matmul_2d_impl_q8(const Tensor& x, const Tensor& w, Tensor& out, con
     const Qint8* w_data = w.data_ptr<Qint8>();
     Qint8* out_data = out.data_ptr<Qint8>();
 
-    const int n_ctx = x.size(0);
-    const int n_embd = x.size(1);
-    const int d_out = w.size(0);
+    const int n_ctx = x.dimsize(0);
+    const int n_embd = x.dimsize(1);
+    const int d_out = w.dimsize(0);
     const int x_st0 = x.stride(0);
     const int w_st0 = w.stride(0);
     const int out_st0 = out.stride(0);
@@ -452,8 +477,6 @@ static void matmul_2d_impl_q8(const Tensor& x, const Tensor& w, Tensor& out, con
     const Qparams& x_qparams = x.qparams();
     const Qparams& w_qparams = w.qparams();
     Qparams& out_qparams = out.qparams();
-
-    const int block_size = globs::q8_block_size;
 
     float* out_buf = g_ops_state.buf(d_out);
 
@@ -464,7 +487,7 @@ static void matmul_2d_impl_q8(const Tensor& x, const Tensor& w, Tensor& out, con
             const Qint8* wrow_data = w_data + wrow * w_st0;
             const Float16* w_row_deltas = w_qparams.row_deltas(wrow);
 
-            const float dot_prod = vec_dot_product_q8(xrow_data, x_row_deltas, wrow_data, w_row_deltas, block_size, n_embd);
+            const float dot_prod = vec_dot_product_q8(xrow_data, x_row_deltas, wrow_data, w_row_deltas, n_embd);
 
             out_buf[wrow] = dot_prod;
         }
@@ -480,9 +503,9 @@ static void matmul_2d_impl_f16(const Tensor& x, const Tensor& w, Tensor& out, co
     const Float16* w_data = w.data_ptr<Float16>();
     Float16* out_data = out.data_ptr<Float16>();
 
-    const int n_ctx = x.size(0);
-    const int n_embd = x.size(1);
-    const int d_out = w.size(0);
+    const int n_ctx = x.dimsize(0);
+    const int n_embd = x.dimsize(1);
+    const int d_out = w.dimsize(0);
     const int x_st0 = x.stride(0);
     const int w_st0 = w.stride(0);
     const int out_st0 = out.stride(0);
@@ -503,12 +526,12 @@ static void matmul_2d_impl_f16(const Tensor& x, const Tensor& w, Tensor& out, co
 
 static void matmul_2d(const Tensor& x, const Tensor& w, Tensor& out, const int start_pos=0)
 {
-    const int n_ctx = x.size(0);
-    const int n_out = w.size(0);
-    const int n_embd = x.size(1);
+    const int n_ctx = x.dimsize(0);
+    const int n_out = w.dimsize(0);
+    const int n_embd = x.dimsize(1);
 
     GTEN_ASSERT(x.is_2d());
-    GTEN_ASSERT(w.is_2d() && w.size(1) == n_embd);
+    GTEN_ASSERT(w.is_2d() && w.dimsize(1) == n_embd);
     GTEN_ASSERT(out.is_2d() && out.shape_eq({n_ctx, n_out}));
     GTEN_ASSERT(x.dtype() == w.dtype() && w.dtype() == out.dtype());
 
@@ -525,9 +548,9 @@ void matmul_2d_transposed_q8(const Tensor& x, const Tensor& w, Tensor& out, cons
     const Qint8* w_data = w.data_ptr<Qint8>();
     Qint8* out_data = out.data_ptr<Qint8>();
 
-    const int n_ctx = x.size(0);
-    const int n_embd = x.size(1);
-    const int d_out = w.size(0);
+    const int n_ctx = x.dimsize(0);
+    const int n_embd = x.dimsize(1);
+    const int d_out = w.dimsize(0);
     const int x_st0 = x.stride(0);
     const int w_st0 = w.stride(0);
     const int out_st0 = out.stride(0);  // out: nemb, nctx: max_ctx, 1
@@ -548,7 +571,7 @@ void matmul_2d_transposed_q8(const Tensor& x, const Tensor& w, Tensor& out, cons
             const Qint8* w_row_data = w_data + wrow * w_st0;
             const Float16* w_ds = w_qparams.row_deltas(wrow);
 
-            const float dot_prod = vec_dot_product_q8(x_row_data, x_ds, w_row_data, w_ds, block_size, n_embd);
+            const float dot_prod = vec_dot_product_q8(x_row_data, x_ds, w_row_data, w_ds, n_embd);
             
             out_buf[wrow] = dot_prod;
         }
@@ -576,9 +599,9 @@ void matmul_2d_transposed_f16(const Tensor& x, const Tensor& w, Tensor& out, con
     const Float16* w_data = w.data_ptr<Float16>();
     Float16* out_data = out.data_ptr<Float16>();
 
-    const int n_ctx = x.size(0);
-    const int n_embd = x.size(1);
-    const int d_out = w.size(0);
+    const int n_ctx = x.dimsize(0);
+    const int n_embd = x.dimsize(1);
+    const int d_out = w.dimsize(0);
     const int x_st0 = x.stride(0);
     const int w_st0 = w.stride(0);
     const int out_st0 = out.stride(0);
@@ -598,12 +621,12 @@ void matmul_2d_transposed_f16(const Tensor& x, const Tensor& w, Tensor& out, con
 
 static void matmul_2d_transposed(const Tensor& x, const Tensor& w, Tensor& out, const int start_pos=0)
 {
-    const int n_ctx = x.size(0);
-    const int n_out = w.size(0);
-    const int n_embd = x.size(1);
+    const int n_ctx = x.dimsize(0);
+    const int n_out = w.dimsize(0);
+    const int n_embd = x.dimsize(1);
 
     GTEN_ASSERT(x.is_2d());
-    GTEN_ASSERT(w.is_2d() && w.size(1) == n_embd);
+    GTEN_ASSERT(w.is_2d() && w.dimsize(1) == n_embd);
     GTEN_ASSERT(out.is_2d() && out.shape_eq({n_out, n_ctx}));
     GTEN_ASSERT(x.dtype() == w.dtype() && w.dtype() == out.dtype());
 
@@ -615,51 +638,23 @@ static void matmul_2d_transposed(const Tensor& x, const Tensor& w, Tensor& out, 
 }
 
 
-static void silu_q8(const Tensor& inp, Tensor& out, const int start_pos)
+static void silu_impl(const Tensor& inp, Tensor& out, const int start_pos)
 {
-    const Qint8* inp_data = inp.data_ptr<Qint8>();
-    Qint8* out_data = out.data_ptr<Qint8>();
+    const int n_ctx = inp.dimsize(0);
+    const int n_embd = inp.dimsize(1);
 
-    const int n_ctx = inp.size(0);
-    const int n_embd = inp.size(1);
-
-    const Qparams& inp_qparams = inp.qparams();
-    Qparams& out_qparams = out.qparams();
-
-    float* inp_buf = g_ops_state.buf(n_embd * 2);
-    float* out_buf = inp_buf + n_embd;
+    float* buf = g_ops_state.buf(n_embd);
 
     for (int i = start_pos; i < n_ctx; i++)
     {
-        const Qint8* inp_row_data = inp_data + i * n_embd;
-        Qint8* out_row_data = out_data + i * n_embd;
-        dequantize_row(i, inp_row_data, inp_qparams, inp_buf);
+        row_to_float(inp, i, buf);
 
         for (int j = 0; j < n_embd; j++) {
-            const float x = inp_buf[j];
-            out_buf[j] = x / (1.0f + std::exp(-x));
+            const float x = buf[j];
+            buf[j] = x / (1.0f + std::exp(-x));
         }
 
-        quantize_row(i, out_buf, out_qparams, out_row_data);
-    }
-}
-
-
-static void silu_f16(const Tensor& inp, Tensor& out, const int start_pos) {
-    const Float16* inp_data = inp.data_ptr<Float16>();
-    Float16* out_data = out.data_ptr<Float16>();
-
-    const int n_ctx = inp.size(0);
-    const int n_embd = inp.size(1);
-
-    for (int i = start_pos; i < n_ctx; i++) {
-        for (int j = 0; j < n_embd; j++) {
-            // sigmoid
-            const float x = fp16_to_fp32(inp_data[i * n_embd + j]);
-            // const float x_sigmoid = x < 0.0f ? std::exp(x) / (1.0f + std::exp(x)) : 1.0f / (1.0f + std::exp(-x));
-            const float x_sigmoid =  x / (1.0f + std::exp(-x));
-            out_data[i * n_embd + j] = fp32_to_fp16(x_sigmoid);   
-        }
+        row_from_float(buf, i, out);
     }
 }
 
@@ -669,44 +664,29 @@ static void silu(const Tensor& inp, Tensor& out, const int start_pos=0)
     GTEN_ASSERT(inp.shape_eq(out.shape()));
     GTEN_ASSERT(inp.dtype() == out.dtype());
 
-    if (inp.is_quantized()) {
-        silu_q8(inp, out, start_pos);
-    } else {
-        silu_f16(inp, out, start_pos);
-    }
+    silu_impl(inp, out, start_pos);
 }
 
 static void silu_inplace(Tensor& inp, const int start_pos=0)
 {
-    if (inp.is_quantized()) {
-        silu_q8(inp, inp, start_pos);
-    } else {
-        silu_f16(inp, inp, start_pos);
-    }
+    silu_impl(inp, inp, start_pos);
 }
 
 
-static void rotary_emb_q8(Tensor& inp, const int d_head, const int start_pos)
+static void rotary_emb_impl(Tensor& inp, const int d_head, const int start_pos)
 {
-    const int n_ctx = inp.size(0);
-    const int n_embd = inp.size(1);
+    const int n_ctx = inp.dimsize(0);
+    const int n_embd = inp.dimsize(1);
     const int n_head = n_embd / d_head;
 
     Tensor inpx = inp.view({n_ctx, n_head, d_head});
-
     const int st0 = inpx.stride(0);
-
-    Qint8* inp_data = inpx.data_ptr<Qint8>();
 
     float* inp_buf = g_ops_state.buf(n_embd);
 
-    Qparams& inp_qparams = inp.qparams();
-
     const float d = static_cast<float>(d_head);
-
     for (int i = start_pos; i < n_ctx; ++i) {
-        Qint8* inp_row_data = inp_data + i*st0;
-        dequantize_row(i, inp_row_data, inp_qparams, inp_buf);
+        row_to_float(inp, i, inp_buf);
 
        for (int h = 0; h < n_head; ++h) {
             float* inp_vec = inp_buf + h*d_head;
@@ -728,57 +708,13 @@ static void rotary_emb_q8(Tensor& inp, const int d_head, const int start_pos)
             }
         }
 
-        quantize_row(i, inp_buf, inp_qparams, inp_row_data);
-    }
-}
-
-
-static void rotary_emb_f16(Tensor& inp, const int d_head, const int start_pos)
-{
-    const int n_ctx = inp.size(0);
-    const int n_embd = inp.size(1);
-    const int n_head = n_embd / d_head;
-
-    Tensor inpx = inp.view({n_ctx, n_head, d_head}).permute({1, 0, 2});
-
-    const int st0 = inpx.stride(0);
-    const int st1 = inpx.stride(1);
-
-    Float16* inp_data = inpx.data_ptr<Float16>();
-
-    const float d = static_cast<float>(d_head);
-
-    for (int h = 0; h < n_head; ++h) {
-        for (int i = start_pos; i < n_ctx; ++i)
-        {
-            Float16* inp_vec = inp_data + h*st0 + i*st1;
-            const float m = static_cast<float>(i);
-
-            const int d_half = d_head / 2;
-            for (int j = 0; j < d_half; ++j)
-            {
-                const float x0 = fp16_to_fp32(inp_vec[j]);
-                const float x1 = fp16_to_fp32(inp_vec[j + d_half]);
-
-                const float m_theta_i = m * std::pow(10000.0f, -(2.0f*j/d));
-
-                const float o0 = x0 * std::cos(m_theta_i) - x1 * std::sin(m_theta_i);
-                const float o1 = x0 * std::sin(m_theta_i) + x1 * std::cos(m_theta_i);
-
-                inp_vec[j] = fp32_to_fp16(o0);
-                inp_vec[j + d_half] = fp32_to_fp16(o1);
-            }
-        }
+        row_from_float(inp_buf, i, inp);
     }
 }
 
 static void rotary_emb(Tensor& inp, const int d_head, const int start_pos=0)
 {
-    if (inp.is_quantized()) {
-        rotary_emb_q8(inp, d_head, start_pos);
-    } else {
-        rotary_emb_f16(inp, d_head, start_pos);
-    }
+    rotary_emb_impl(inp, d_head, start_pos);
 }
 
 static void rms_norm_vec_f32(const float* inp, const Float16* weight, float* out, const int vec_size) {
@@ -799,82 +735,34 @@ static void rms_norm_vec_f32(const float* inp, const Float16* weight, float* out
     }
 }
 
-static void rms_norm_vec_f16(const Float16* inp, const Float16* weight, Float16* out, const int vec_size) {
-    float sq_sum = 0.0f;
-
-    for (int i = 0; i < vec_size; ++i) {
-        sq_sum += std::pow(fp16_to_fp32(inp[i]), 2.0f);
-    }
-
-    const float sq_mean = sq_sum / static_cast<float>(vec_size);
-    const float root_mean_sq = std::sqrt(sq_mean);
-
-    for (int i = 0; i < vec_size; ++i)
-    {
-        const float xi = fp16_to_fp32(inp[i]);
-        const float wi = fp16_to_fp32(weight[i]);
-        out[i] = fp32_to_fp16(xi / (root_mean_sq + 1e-6f) * wi);
-    }
-}
-
-
-static void rms_norm_q8(const Tensor& inp, const Tensor& weight, Tensor& out, const int start_pos)
+static void rms_norm_impl(const Tensor& inp, const Tensor& weight, Tensor& out, const int start_pos)
 {
-    const Qint8* inp_data = inp.data_ptr<Qint8>();
-    const Float16* weight_data = weight.data_ptr<Float16>();
-    Qint8* out_data = out.data_ptr<Qint8>();
+    const int n_ctx = inp.dimsize(0);
+    const int n_embd = inp.dimsize(1);
 
-    const int n_embd = inp.size(1);
-    float* inp_buf = g_ops_state.buf(n_embd + n_embd);
+    const Float16* weight_data = weight.data_ptr<Float16>();
+    float* inp_buf = g_ops_state.buf(n_embd * 2);
     float* out_buf = inp_buf + n_embd;
 
-    const Qparams& inp_qparams = inp.qparams();
-    Qparams& out_qparams = out.qparams();
-
-    const int n_ctx = inp.size(0);
-    for (int i = start_pos; i < n_ctx; ++i)
+    for (int i = start_pos; i < n_ctx; i++)
     {
-        const Qint8* inp_row_data = inp_data + i * n_embd;
-        dequantize_row(i, inp_row_data, inp_qparams, inp_buf);
+        row_to_float(inp, i, inp_buf);
 
         rms_norm_vec_f32(inp_buf, weight_data, out_buf, n_embd);
 
-        Qint8* out_row_data = out_data + i * n_embd;
-        quantize_row(i, out_buf, out_qparams, out_row_data);
-    }
-}
-
-static void rms_norm_f16(const Tensor& inp, const Tensor& weight, Tensor& out, const int start_pos)
-{
-    const Float16* inp_data = inp.data_ptr<Float16>();
-    const Float16* weight_data = weight.data_ptr<Float16>();
-    Float16* out_data = out.data_ptr<Float16>();
-
-    const int n_ctx = inp.size(0);
-    const int n_embd = inp.size(1);
-
-    for (int i = start_pos; i < n_ctx; ++i)
-    {
-        const Float16* inp_row_data = inp_data + i * n_embd;
-        Float16* out_row_data = out_data + i * n_embd;
-        rms_norm_vec_f16(inp_row_data, weight_data, out_row_data, n_embd);
+        row_from_float(out_buf, i, out);
     }
 }
 
 static void rms_norm(const Tensor& inp, const Tensor& weight, Tensor& out, const int start_pos=0) {
-    const int n_embd = inp.size(1);
-    GTEN_ASSERT(weight.size(0) == n_embd);
+    const int n_embd = inp.dimsize(1);
+    GTEN_ASSERT(weight.dimsize(0) == n_embd);
     GTEN_ASSERT(inp.is_2d() && inp.dtype() == out.dtype());
     GTEN_ASSERT(weight.is_1d());
     GTEN_ASSERT(inp.shape_eq(out.shape()));
 
-    if (inp.is_quantized()) {
-        rms_norm_q8(inp, weight, out, start_pos);
-    } else {
-        rms_norm_f16(inp, weight, out, start_pos);
-    }
+    rms_norm_impl(inp, weight, out, start_pos);
 }
-
 
 static void vec_mul_f32(const float* a, const float* b, float* out, int vec_size) {
     for (int i = 0; i < vec_size; i++) {
@@ -882,54 +770,23 @@ static void vec_mul_f32(const float* a, const float* b, float* out, int vec_size
     }
 }
 
-
-static void mul_q8(const Tensor& inp0, const Tensor& inp1, Tensor& out, const int start_pos)
+static void mul_impl(const Tensor& x0, const Tensor& x1, Tensor& out, const int start_pos)
 {
-    const Qint8* inp0_data = inp0.data_ptr<Qint8>();
-    const Qint8* inp1_data = inp1.data_ptr<Qint8>();
-    Qint8* out_data = out.data_ptr<Qint8>();
+    const int n_ctx = x0.dimsize(0);
+    const int n_embd = x1.dimsize(1);
 
-    const int n_ctx = inp0.size(0);
-    const int n_embd = inp0.size(1);
+    float* x0_buf = g_ops_state.buf(n_embd * 3);
+    float* x1_buf = x0_buf + n_embd;
+    float* out_buf = x1_buf + n_embd;
 
-    const Qparams& inp0_qparams = inp0.qparams();
-    const Qparams& inp1_qparams = inp1.qparams();
-    Qparams& out_qparams = out.qparams();
+    for (int i = start_pos; i < n_ctx; i++)
+    {
+        row_to_float(x0, i, x0_buf);
+        row_to_float(x1, i, x1_buf);
 
-    float* inp0_buf = g_ops_state.buf(n_embd * 3);
-    float* inp1_buf = inp0_buf + n_embd;
-    float* out_buf = inp1_buf + n_embd;
+        vec_mul_f32(x0_buf, x1_buf, out_buf, n_embd);
 
-    for (int i = start_pos; i < n_ctx; i++) {
-        const Qint8* inp0_row_data = inp0_data + i * n_embd;
-        const Qint8* inp1_row_data = inp1_data + i * n_embd;
-
-        dequantize_row(i, inp0_row_data, inp0_qparams, inp0_buf);
-        dequantize_row(i, inp1_row_data, inp1_qparams, inp1_buf);
-
-        vec_mul_f32(inp0_buf, inp1_buf, out_buf, n_embd);
-
-        Qint8* out_row_data = out_data + i * n_embd;
-        quantize_row(i, out_buf, out_qparams, out_row_data);
-    }
-}
-
-
-static void mul_f16(const Tensor& inp0, const Tensor& inp1, Tensor& out, const int start_pos)
-{
-    const Float16* inp0_data = inp0.data_ptr<Float16>();
-    const Float16* inp1_data = inp1.data_ptr<Float16>();
-    Float16* out_data = out.data_ptr<Float16>();
-
-    const int n_ctx = inp0.size(0);
-    const int n_embd = inp0.size(1);
-
-    for (int i = start_pos; i < n_ctx; i++) {
-        for (int j = 0; j < n_embd; j++) {
-            const float x0 = fp16_to_fp32(inp0_data[i * n_embd + j]);
-            const float x1 = fp16_to_fp32(inp1_data[i * n_embd + j]);
-            out_data[i * n_embd + j] = fp32_to_fp16(x0 * x1);
-        }
+        row_from_float(out_buf, i, out);
     }
 }
 
@@ -939,11 +796,7 @@ static void mul(const Tensor& inp0, const Tensor& inp1, Tensor& out, const int s
     GTEN_ASSERT(inp0.dtype() == inp1.dtype() && inp1.dtype() == out.dtype());
     GTEN_ASSERT(inp0.shape_eq(inp1.shape()) && inp1.shape_eq(out.shape()));
 
-    if (inp0.is_quantized()) {
-        mul_q8(inp0, inp1, out, start_pos);
-    } else {
-        mul_f16(inp0, inp1, out, start_pos);
-    }
+    mul_impl(inp0, inp1, out, start_pos);
 }
 
 static void mul_inplace(Tensor& inp0, const Tensor& inp1, const int start_pos=0)
@@ -951,62 +804,32 @@ static void mul_inplace(Tensor& inp0, const Tensor& inp1, const int start_pos=0)
     GTEN_ASSERT(inp0.dtype() == inp1.dtype());
     GTEN_ASSERT(inp0.shape_eq(inp1.shape()));
 
-    if (inp0.is_quantized()) {
-        mul_q8(inp0, inp1, inp0, start_pos);
-    } else {
-        mul_f16(inp0, inp1, inp0, start_pos);
-    }
+    mul_impl(inp0, inp1, inp0, start_pos);
 }
 
 
-static void add_impl_q8(const Tensor& x0, const Tensor& x1, Tensor& out, const int start_pos)
+static void add_impl(const Tensor& x0, const Tensor& x1, Tensor& out, const int start_pos)
 {
-    const Qint8* x0_data = x0.data_ptr<Qint8>();
-    const Qint8* x1_data = x1.data_ptr<Qint8>();
-    Qint8* out_data = out.data_ptr<Qint8>();
+    // tensor.row_to_float
+    const int n_ctx = x0.dimsize(0);
+    const int n_embd = x0.dimsize(1);
 
-    const int n_ctx = x0.size(0);
-    const int n_embd = x0.size(1);
-    const int st0 = x0.stride(0);
+    float* x0_buf = g_ops_state.buf(n_embd * 3);
+    float* x1_buf = x0_buf + n_embd;
+    float* out_buf = x1_buf + n_embd;
 
-    Qparams& out_qparams = out.qparams();
-
-    float* buf = g_ops_state.buf(n_embd * 3);
-    float* x0_buf = buf;
-    float* x1_buf = buf + n_embd;
-    float* out_buf = buf + n_embd + n_embd;
-
+    // Read a row to float
+    // Write a float to row.
 
     for (int i = start_pos; i < n_ctx; i++)
     {
-        const Qint8* x0_row_data = x0_data + i * st0;
-        const Qint8* x1_row_data = x1_data + i * st0;
-
-        dequantize_row(i, x0_row_data, x0.qparams(), x0_buf);
-        dequantize_row(i, x1_row_data, x1.qparams(), x1_buf);
+        row_to_float(x0, i, x0_buf);
+        row_to_float(x1, i, x1_buf);
 
         vec_add_f32(x0_buf, x1_buf, out_buf, n_embd);
 
-        Qint8* out_row_data = out_data + i * st0;
-        quantize_row(i, out_buf, out_qparams, out_row_data);
+        row_from_float(out_buf, i, out);
     }
-}
-
-static void add_impl_f16(const Tensor& x0, const Tensor& x1, Tensor& out, const int start_pos)
-{
-    const Float16* x0_data = x0.data_ptr<Float16>();
-    const Float16* x1_data = x1.data_ptr<Float16>();
-    Float16* out_data = out.data_ptr<Float16>();
-
-    const int n_ctx = x0.size(0);
-    const int n_embd = x0.size(1);
-    const int st0 = x0.stride(0);
-
-    const Float16* x0_offs_data = x0_data + start_pos * st0;
-    const Float16* x1_offs_data = x1_data + start_pos * st0;
-    Float16* out_offs_data = out_data + start_pos * st0;
-    const int vec_size = x0.numel() - start_pos * st0; 
-    vec_add_f16(x0_offs_data, x1_offs_data, out_offs_data, vec_size);
 }
 
 static void add(const Tensor& x0, const Tensor& x1, Tensor& out, const int start_pos=0)
@@ -1018,12 +841,7 @@ static void add(const Tensor& x0, const Tensor& x1, Tensor& out, const int start
     GTEN_ASSERT(x0.shape_eq(out.shape()));
     GTEN_ASSERT(x0.dtype() == x1.dtype() && x0.dtype() == out.dtype());
 
-    if (x0.is_quantized())
-    {
-        add_impl_q8(x0, x1, out, start_pos);
-    } else {
-        add_impl_f16(x0, x1, out, start_pos);
-    }
+    add_impl(x0, x1, out, start_pos);
 }
 
 void qk_masked_softmax_f16(const Tensor& q, const Tensor& k, Tensor& qk_out, float scale_factor, const int start_pos) {
@@ -1031,9 +849,9 @@ void qk_masked_softmax_f16(const Tensor& q, const Tensor& k, Tensor& qk_out, flo
     const Float16* k_data = k.data_ptr<Float16>();
     Float16* out_data = qk_out.data_ptr<Float16>();
 
-    const int q_heads = q.size(0);
-    const int n_ctx = q.size(1);
-    const int d_head = q.size(2);
+    const int q_heads = q.dimsize(0);
+    const int n_ctx = q.dimsize(1);
+    const int d_head = q.dimsize(2);
 
     const int qst0 = q.stride(0);
     const int qst1 = q.stride(1);
@@ -1042,7 +860,7 @@ void qk_masked_softmax_f16(const Tensor& q, const Tensor& k, Tensor& qk_out, flo
     const int qkst0 = qk_out.stride(0);
     const int qkst1 = qk_out.stride(1);
 
-    const int k_heads = k.size(0);
+    const int k_heads = k.dimsize(0);
     const int q_heads_per_group = q_heads / k_heads;
 
     // q_heads -> 32
@@ -1120,9 +938,9 @@ void qk_masked_softmax_q8(const Tensor& q, const Tensor& k, Tensor& qk_out, floa
     const Qint8* k_data = k.data_ptr<Qint8>();
     Qint8* out_data = qk_out.data_ptr<Qint8>();
 
-    const int q_heads = q.size(0);
-    const int n_ctx = q.size(1);
-    const int d_head = q.size(2);
+    const int q_heads = q.dimsize(0);
+    const int n_ctx = q.dimsize(1);
+    const int d_head = q.dimsize(2);
 
     const int qst0 = q.stride(0);
     const int qst1 = q.stride(1);
@@ -1131,7 +949,7 @@ void qk_masked_softmax_q8(const Tensor& q, const Tensor& k, Tensor& qk_out, floa
     const int qkst0 = qk_out.stride(0);
     const int qkst1 = qk_out.stride(1);
 
-    const int k_heads = k.size(0);
+    const int k_heads = k.dimsize(0);
     const int q_heads_per_group = q_heads / k_heads;
 
     const Qparams& q_params = q.qparams();
@@ -1155,7 +973,7 @@ void qk_masked_softmax_q8(const Tensor& q, const Tensor& k, Tensor& qk_out, floa
                 const Float16* q_delta = q_params.row_deltas(qrow) + h * blocks_per_head;
                 const Float16* k_delta = k_params.row_deltas(kcol) + (h / q_heads_per_group) * blocks_per_head;
 
-                const float dot_prod = vec_dot_product_q8(qrow_data, q_delta, kcol_data, k_delta, block_size, d_head);
+                const float dot_prod = vec_dot_product_q8(qrow_data, q_delta, kcol_data, k_delta, d_head);
                 out_buf[kcol] = dot_prod * scale_factor;
             }
 
@@ -1204,12 +1022,12 @@ void qkv_matmul_q8(const Tensor& qk, const Tensor& v, Tensor& qkv_out, const int
     const Qint8* v_data = v.data_ptr<Qint8>();
     Qint8* out_data = qkv_out.data_ptr<Qint8>();
 
-    const int n_ctx = qk.size(1);
-    const int q_heads = qk.size(0);
+    const int n_ctx = qk.dimsize(1);
+    const int q_heads = qk.dimsize(0);
     
-    const int dhead = v.size(1);
+    const int dhead = v.dimsize(1);
 
-    const int v_heads = v.size(0);
+    const int v_heads = v.dimsize(0);
     const int q_heads_per_group = q_heads / v_heads;
 
     const int qkst0 = qk.stride(0);
@@ -1262,11 +1080,11 @@ void qkv_matmul_f16(const Tensor& qk, const Tensor& v, Tensor& qkv_out, const in
     const Float16* v_data = v.data_ptr<Float16>();
     Float16* out_data = qkv_out.data_ptr<Float16>();
 
-    const int q_heads = qk.size(0);
-    const int n_ctx = qk.size(1);
-    const int dhead = v.size(1);
+    const int q_heads = qk.dimsize(0);
+    const int n_ctx = qk.dimsize(1);
+    const int dhead = v.dimsize(1);
 
-    const int v_heads = v.size(0);
+    const int v_heads = v.dimsize(0);
     const int q_heads_per_group = q_heads / v_heads;
 
     const int qkst0 = qk.stride(0);
@@ -1293,11 +1111,11 @@ void qkv_matmul_f16(const Tensor& qk, const Tensor& v, Tensor& qkv_out, const in
 
 static void qkv_attn_impl(const Tensor& q, const Tensor& k, const Tensor& v, Tensor& qk, Tensor& qkv, int max_ctx, const int start_pos)
 {
-    const int n_ctx = q.size(0);
-    const int n_embd = q.size(1);
-    const int q_n_head = qk.size(0);
+    const int n_ctx = q.dimsize(0);
+    const int n_embd = q.dimsize(1);
+    const int q_n_head = qk.dimsize(0);
     const int d_head = n_embd / q_n_head;
-    const int kv_n_head = k.size(1) / d_head;
+    const int kv_n_head = k.dimsize(1) / d_head;
 
     const Tensor q0 = q.view({n_ctx, q_n_head, d_head}).permute({1, 0, 2});
     
@@ -1330,9 +1148,9 @@ static void qkv_attn_impl(const Tensor& q, const Tensor& k, const Tensor& v, Ten
 
 static void qkv_attn(const Tensor& q, const Tensor& k, const Tensor& v, Tensor& qk, Tensor& qkv, const int max_ctx, const int start_pos=0)
 {
-    const int n_ctx = q.size(0);
-    const int n_embd = q.size(1);
-    const int n_head = qk.size(0);
+    const int n_ctx = q.dimsize(0);
+    const int n_embd = q.dimsize(1);
+    const int n_head = qk.dimsize(0);
 
     // GTEN_ASSERT(q.is_2d() && q.shape_eq(k.shape()));
     // GTEN_ASSERT(k.is_2d());

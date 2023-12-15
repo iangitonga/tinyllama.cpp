@@ -45,18 +45,15 @@ public:
 
     // Get the pointer to internal data buffer.
     template <typename T>
-    T* data_ptr() { 
-        return reinterpret_cast<T*>(data_ptr_.get()); 
-    }
+    T* data_ptr() { return reinterpret_cast<T*>(data_ptr_.get()); }
 
     template <typename T>
-    const T* data_ptr() const { 
-        return reinterpret_cast<const T*>(data_ptr_.get()); 
-    }
+    const T* data_ptr() const { return reinterpret_cast<const T*>(data_ptr_.get()); }
 
-    Dtype dtype() const {
-        return dtype_;
-    }
+    const void* data_ptr() const { return data_ptr_.get(); }
+    void* data_ptr() { return data_ptr_.get(); }
+
+    Dtype dtype() const { return dtype_; }
 
     // Get the number of bytes that an element in the tensor occupies.
     int itemsize() const {
@@ -82,12 +79,10 @@ public:
     int ndims() const { return shape_.size(); }
 
     // Get the number of elems in the tensor.
-    int numel() const {
-        return numel_;
-    }
+    int numel() const { return numel_; }
 
     /// Returns the size of the give dimension.
-    int size(int i) const {
+    int dimsize(int i) const {
         GTEN_ASSERT(i < int(shape_.size()));
         return shape_[i];
     }
@@ -98,25 +93,15 @@ public:
         return strides_[i];
     }
 
-    size_t nbytes() const {
-        return numel_ * itemsize();
-    }
+    size_t nbytes() const { return numel_ * itemsize(); }
 
-    const std::vector<int>& shape() const {
-        return shape_;
-    }
+    const std::vector<int>& shape() const { return shape_; }
 
-    bool shape_eq(const std::vector<int>& shape) const {
-        return shape == shape_;
-    }
+    bool shape_eq(const std::vector<int>& shape) const { return shape == shape_; }
 
-    const Qparams& qparams() const { 
-        return qparams_;
-    }
+    const Qparams& qparams() const { return qparams_; }
 
-    Qparams& qparams() { 
-        return qparams_;
-    }
+    Qparams& qparams() { return qparams_; }
 
 private:
     Dtype dtype_ = kFloat32;

@@ -62,11 +62,17 @@ public:
 
     void load_from_ckpt(std::ifstream& ckpt);
 
+    void print_perf(const int n_pred_tokens);
+
 private:
     Embedding tok_emb_;
     RMSNorm norm_;
     EmbeddingLinear lm_head_;
     std::vector<AttentionBlock> blocks_;
+
+public:
+    int64_t load_time = 0;
+    int64_t sample_time = 0;
 };
 
 
@@ -112,15 +118,16 @@ USAGE:
 
 Optional args. 
 -f16 :     Use float-16 model and inference (2.2GB). [default]
--q8  :     Use 8-bit quantized model (1.1GB) and inference.
+-q8  :     Use 8-bit quantized model (1.1GB) and 8-bit inference.
 --temp T : Temperature to use during sampling. It must be greater than 0. [default=0.9].
 --npred  N : Number of tokens to generate. Minimum is 1 and max is 2048. [default=512].
 --topk K : Top tokens to randomly select from during prediction. [default=40].
 
 Examples:
   ./tinyllama
-  ./tinyllama -q8 --temp 0.5
-  ./tinyllama -p "Give three tips for staying healthier." 
+  ./tinyllama -q8 --npred 1000
+  ./tinyllama -p "Give three tips for staying healthier."
+
 )";
 
 
@@ -174,7 +181,7 @@ int main(int argc, char const *argv[])
                 std::cerr << "npred must be greater than 1 and less than 2048.\n";
                 return -1;
             }
-            n_predict = std::max(npred, 2048);
+            n_predict = std::min(npred, 2048);
             i += 1; // skip len param
         } else if (arg == "--temp") {
             if (argc <= i+1) {
@@ -322,6 +329,8 @@ static inline void read_layer_header(std::ifstream& fin, bool debug = false) {
 
 void TinyLlama::load_from_ckpt(std::ifstream &ckpt)
 {
+    Timer load_timer{&load_time};
+
     const int64_t expected_magic = 0x454c49464e455447;
     int64_t magic;
     ckpt.read(reinterpret_cast<char*>(&magic), sizeof(magic));
@@ -382,15 +391,20 @@ void greedy_sample(std::string& prompt, TinyLlama& model, Tokenizer& tokenizer, 
     std::vector<int> tokens = tokenizer.encode(prompt);
     tokens.reserve(n_predict);
 
-    const int n_pred_tokens = n_predict - tokens.size();
-    for (int i = 0; i < n_pred_tokens; i++)
+    const int max_iters = n_predict - tokens.size();
+    int n_iters = 0;
+    for (int i = 0; i < max_iters; i++)
     {
+        n_iters += 1;
+
         Tensor input{tokens.data(), {(int)tokens.size()}, kInt32};
 
         const int start_pos = (i == 0) ? 0 : input.numel() - 1; 
         Tensor logits = model.logits(input, start_pos);
 
-        const int n_ctx = logits.size(0);
+        Timer sample_timer{&model.sample_time};
+
+        const int n_ctx = logits.dimsize(0);
         const float *logits_data = logits.data_ptr<float>();
         const int logits_size = model.params.n_vocab;
 
@@ -416,6 +430,8 @@ void greedy_sample(std::string& prompt, TinyLlama& model, Tokenizer& tokenizer, 
     }
     
     std::cerr << '\n';
+
+    model.print_perf(n_iters);
 }
 
 void topk_sample(std::string& prompt, TinyLlama& model, Tokenizer& tokenizer, const int n_predict, const float temp, const int top_k)
@@ -437,6 +453,9 @@ void topk_sample(std::string& prompt, TinyLlama& model, Tokenizer& tokenizer, co
         gten::Tensor input{tokens.data(), {(int)tokens.size()}, gten::kInt32};
         const int start_pos = (i == 0) ? 0 : input.numel() - 1; 
         gten::Tensor logits = model.logits(input, start_pos);
+
+        Timer sample_timer{&model.sample_time};
+
         const float* logits_data = logits.data_ptr<float>();
 
         logits_probs.clear();
@@ -485,4 +504,74 @@ void topk_sample(std::string& prompt, TinyLlama& model, Tokenizer& tokenizer, co
     }
 
     std::cerr << "\n";
+}
+
+
+void TinyLlama::print_perf(const int n_pred_tokens)
+{
+    int64_t linear_time = 0;
+    int64_t attn_time = 0;
+    int64_t non_linear_time = 0;
+
+    {
+        const int64_t emb_time = tok_emb_.exec_time;
+        int64_t norm_time = norm_.exec_time;
+        int64_t res_time = 0;
+        int64_t rope_time = 0;
+        int64_t silu_time = 0;
+        int64_t mul_time = 0;
+        linear_time += lm_head_.exec_time;
+
+        for (const auto& b : blocks_) {
+            norm_time += b.attn_norm.exec_time + b.ffn_norm.exec_time;
+            attn_time += b.attn.exec_time_attn;
+            res_time  += b.attn_res.exec_time + b.inp_res.exec_time;
+            rope_time += b.attn.q_rope.exec_time + b.attn.k_rope.exec_time;
+            silu_time += b.ffn_silu.exec_time;
+            mul_time  += b.ffn_mul.exec_time;
+            linear_time += b.attn.query.exec_time + b.attn.key.exec_time + b.attn.value.exec_time + b.attn.qkv_proj.exec_time;
+            linear_time += b.ffn_gate_proj.exec_time + b.ffn_up_proj.exec_time + b.ffn_down_proj.exec_time;
+        }
+
+        non_linear_time = norm_time + res_time + rope_time + silu_time + mul_time;
+    }
+    const int64_t tot_inf_time = linear_time + attn_time + non_linear_time;
+
+    const int64_t tensor_mem = G_TensorMemAllocated;
+    int64_t weights_mem = 0;
+
+    {
+        const auto bytes = [](const Tensor& t) { return t.nbytes() + t.qparams().nbytes(); };
+
+        weights_mem += bytes(tok_emb_.weight);
+        weights_mem += bytes(norm_.weight);
+        weights_mem += bytes(lm_head_.weight);
+
+        for (const auto& b : blocks_) {
+            weights_mem += bytes(b.attn_norm.weight) + bytes(b.ffn_norm.weight);
+            weights_mem += bytes(b.attn.query.weight) + bytes(b.attn.key.weight) + bytes(b.attn.value.weight) + bytes(b.attn.qkv_proj.weight);
+            weights_mem += bytes(b.ffn_gate_proj.weight) + bytes(b.ffn_up_proj.weight) + bytes(b.ffn_down_proj.weight);
+        }
+    }
+
+    const int acv_mem = tensor_mem - weights_mem;
+
+
+    std::cout << "\n-------------------------------\n";
+    std::cout << " " << "PERFORMANCE\n";
+    std::cout << "-------------------------------\n";
+    std::cout << " " << "Inference [per tok] : " << std::setw(5) << tot_inf_time/n_pred_tokens << "ms\n";
+    std::cout << " " << "Sample time         : " << std::setw(5) << sample_time << "ms\n";
+    std::cout << " " << "Load time           : " << std::setw(5) << load_time << "ms\n";
+    std::cout << " " << "Inference [total]   : " << std::setw(5) << tot_inf_time << "ms\n";
+    std::cout << " " << "Total runtime       : " << std::setw(5) << load_time + sample_time + tot_inf_time << "ms\n";
+    std::cout << "-------------------------------\n";
+    std::cout << " " << "Mem usage [total]   : " << std::setw(4) << tensor_mem/1000000 << "MB\n";
+    std::cout << " " << "Mem usage [model]   : " << std::setw(4) << weights_mem/1000000 << "MB\n";
+    std::cout << " " << "Mem usage [actvs]   : " << std::setw(4) << acv_mem/1000000 << "MB\n";
+    std::cout << "-------------------------------\n\n";
+    std::cout << " " << "Linear time         : " << std::setw(5) << linear_time << "ms\n";
+    std::cout << " " << "Attention time      : " << std::setw(5) << attn_time << "ms\n";
+    std::cout << " " << "Other ops time      : " << std::setw(5) << non_linear_time << "ms\n";
+    std::cout << "-------------------------------\n\n";
 }

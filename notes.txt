@@ -1,8 +1,5 @@
 - Implement 4-bit quantized version.
 
 
-- implement timers and perf metrics.
-- use MT option.
-- refactor ops.
+- Improve transposed and permuted tensors ops.
 - Utilise tables, exp, silu, etc qk optimise softmax
-- Handle transposed and permuted tensors ops.

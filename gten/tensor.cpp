@@ -43,8 +43,8 @@ Tensor::Tensor(const std::vector<int>& shape, Dtype dtype)
 
     // QPARAMS
     if (dtype == kQint8 && ndims() == 2) {
-        const int n_rows = size(0);
-        const int n_cols = size(1);
+        const int n_rows = dimsize(0);
+        const int n_cols = dimsize(1);
         qparams_ = Qparams(n_rows, n_cols);
         G_TensorMemAllocated += qparams_.nbytes();
     }
@@ -69,8 +69,8 @@ Tensor::Tensor(const void* data_ptr, const std::vector<int>& shape, Dtype dtype)
     storage_size_ = 0;
 }
 
-
-void Tensor::validate_shape(const std::vector<int>& shape) const {
+void Tensor::validate_shape(const std::vector<int> &shape) const
+{
     GTEN_ASSERTM(shape.size() != 0, "The given shape is empty.");
     GTEN_ASSERTM(shape.size() <= 3, "Shape with dimensions > 3 not supported.");
     for (int i = 0; i < int(shape.size()); i++) {
@@ -80,7 +80,6 @@ void Tensor::validate_shape(const std::vector<int>& shape) const {
         }
     }
 }
-
 
 int Tensor::numel_from_shape(const std::vector<int>& shape) const {
     int numel = 1;

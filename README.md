@@ -22,3 +22,8 @@ To utilise the 8-bit quantized format, add the -q8 option to the command:
 ```
 ./tinyllama -q8
 ```
+
+To see all the available options, run
+```
+./tinyllama --help
+```

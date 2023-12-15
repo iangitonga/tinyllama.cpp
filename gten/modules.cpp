@@ -15,9 +15,9 @@ Embedding::Embedding(int n_vocab, int n_embd, int max_ctx, Dtype dtype)
 }
 
 Tensor Embedding::forward(const Tensor& tokens, const int start_pos) {
-    Timer timer{&exec_time_emb_ms_};
+    Timer timer{&exec_time};
     
-    const int n_embd = weight.size(1);
+    const int n_embd = weight.dimsize(1);
     emb_acv.resize({tokens.numel(), n_embd});
 
     ops::token_embed(weight, tokens, emb_acv, start_pos);
@@ -31,10 +31,10 @@ Residual::Residual(int max_ctx, int n_out, Dtype dtype)
 }
 
 Tensor Residual::forward(const Tensor& inp0, const Tensor& inp1, const int start_pos) {
-    Timer timer{&exec_time_ms_};
+    Timer timer{&exec_time};
 
-    const int n_ctx = inp0.size(0);
-    const int n_embd = inp0.size(1);
+    const int n_ctx = inp0.dimsize(0);
+    const int n_embd = inp0.dimsize(1);
 
     acv.resize({n_ctx, n_embd});
     ops::add(inp0, inp1, acv, start_pos);
@@ -50,10 +50,10 @@ Linear::Linear(int n_in, int n_out, int max_ctx, Dtype dtype)
 }
 
 Tensor Linear::forward(const Tensor &inp, const int start_pos) {
-    Timer timer{&exec_time_ms_};
+    Timer timer{&exec_time};
 
-    const int n_ctx = inp.size(0);
-    const int n_out = weight.size(0);
+    const int n_ctx = inp.dimsize(0);
+    const int n_out = weight.dimsize(0);
     
     acv.resize({n_ctx, n_out});
     ops::matmul_2d(inp, weight, acv, start_pos);
@@ -64,10 +64,10 @@ Tensor Linear::forward(const Tensor &inp, const int start_pos) {
 
 /// TODO: Construct a transposed linear module?
 Tensor Linear::forward_transposed(const Tensor &inp, const int start_pos) {
-    Timer timer{&exec_time_ms_};
+    Timer timer{&exec_time};
 
-    const int n_ctx = inp.size(0);
-    const int n_out = weight.size(0);
+    const int n_ctx = inp.dimsize(0);
+    const int n_out = weight.dimsize(0);
     
     acv.resize({n_out, n_ctx});
     /// TODO: Allow strides-lock on tensors.
@@ -84,6 +84,8 @@ EmbeddingLinear::EmbeddingLinear(int n_embd, int n_vocab, int max_ctx, Dtype dty
 
 Tensor EmbeddingLinear::forward(const Tensor& inp)
 {
+    Timer timer{&exec_time};
+
     ops::emb_matmul(inp, weight, acv);
     return acv;
 }
@@ -95,8 +97,10 @@ RMSNorm::RMSNorm(int d_in, int max_ctx, Dtype dtype)
 
 Tensor RMSNorm::forward(const Tensor& inp, const int start_pos)
 {
-    const int n_ctx = inp.size(0);
-    const int n_embd = inp.size(1);
+    Timer timer{&exec_time};
+
+    const int n_ctx = inp.dimsize(0);
+    const int n_embd = inp.dimsize(1);
 
     acv.resize({n_ctx, n_embd});
 
@@ -115,6 +119,8 @@ Multiply::Multiply(int max_ctx, int d_out, Dtype dtype, const bool inplace)
 
 Tensor Multiply::forward(Tensor &inp0, const Tensor &inp1, const int start_pos)
 {
+    Timer timer{&exec_time};
+
     if (!inplace_)
     {
         ops::mul_inplace(inp0, inp1, start_pos);
@@ -122,8 +128,8 @@ Tensor Multiply::forward(Tensor &inp0, const Tensor &inp1, const int start_pos)
         return inp0;
     } else 
     {
-        const int n_ctx = inp0.size(0);
-        const int n_embd = inp0.size(1);
+        const int n_ctx = inp0.dimsize(0);
+        const int n_embd = inp0.dimsize(1);
         acv.resize({n_ctx, n_embd});
 
         ops::mul(inp0, inp1, acv, start_pos);
@@ -142,13 +148,15 @@ SiLU::SiLU(int max_ctx, int d_out, Dtype dtype, const bool inplace)
 
 Tensor SiLU::forward(Tensor &inp, const int start_pos)
 {
+    Timer timer{&exec_time};
+
     if (inplace_) {
         ops::silu_inplace(inp, start_pos);
 
         return inp;
     } else {
-        const int n_ctx = inp.size(0);
-        const int n_embd = inp.size(1);
+        const int n_ctx = inp.dimsize(0);
+        const int n_embd = inp.dimsize(1);
 
         acv.resize({n_ctx, n_embd});
         ops::silu(inp, acv, start_pos);
@@ -157,7 +165,6 @@ Tensor SiLU::forward(Tensor &inp, const int start_pos)
     }
 }
 
-/// TODO: Change size to dimsize[i] or shape[i].
 RotaryEmbedding::RotaryEmbedding(const int d_head, const bool inplace)
     : d_head_{d_head}
 {
@@ -168,7 +175,9 @@ RotaryEmbedding::RotaryEmbedding(const int d_head, const bool inplace)
 
 Tensor RotaryEmbedding::forward(Tensor& inp, const int start_pos)
 {
-    const int n_ctx = inp.size(0);
+    Timer timer{&exec_time};
+
+    const int n_ctx = inp.dimsize(0);
     ops::rotary_emb(inp, d_head_, start_pos);
 
     return inp;
@@ -180,8 +189,8 @@ SelfAttention::SelfAttention(int n_heads, int n_embd, int n_query_groups, int ma
       qkv_proj{Linear(n_embd, n_embd, max_ctx, dtype)},
       qk_acv{Tensor({n_heads, max_ctx, max_ctx}, dtype)},
       qkv_acv{Tensor({max_ctx, n_embd}, dtype)},
-      qrot{RotaryEmbedding{n_embd/n_heads, /*inplace=*/true}},
-      krot{RotaryEmbedding{n_embd/n_heads, /*inplace=*/true}},
+      q_rope{RotaryEmbedding{n_embd/n_heads, /*inplace=*/true}},
+      k_rope{RotaryEmbedding{n_embd/n_heads, /*inplace=*/true}},
       n_heads_{n_heads}, max_ctx_{max_ctx}
 {
     const int d_head = n_embd / n_heads;
@@ -195,8 +204,8 @@ Tensor SelfAttention::forward(const Tensor &inp, const int start_pos)
     Tensor q = query.forward(inp, start_pos);
     Tensor k = key.forward(inp, start_pos);
 
-    q = qrot.forward(q, start_pos);
-    k = krot.forward(k, start_pos);
+    q = q_rope.forward(q, start_pos);
+    k = k_rope.forward(k, start_pos);
 
     Tensor v = value.forward_transposed(inp, start_pos);
 
@@ -208,8 +217,10 @@ Tensor SelfAttention::forward(const Tensor &inp, const int start_pos)
 
 Tensor SelfAttention::masked_qkv_attn(const Tensor& q, const Tensor& k, const Tensor& v, const int start_pos)
 {
-    const int n_ctx = q.size(0);
-    const int n_embd = q.size(1);
+    Timer timer{&exec_time_attn};
+
+    const int n_ctx = q.dimsize(0);
+    const int n_embd = q.dimsize(1);
 
     qk_acv.resize({n_heads_, n_ctx, n_ctx});
     qkv_acv.resize({n_ctx, n_embd});
