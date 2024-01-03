@@ -150,7 +150,8 @@ inline void quantize_row(int row_idx, const float* x, Qparams& out_qparams, Qint
     }
 }
 
-inline void quantize_col(int row_idx, const float* x, Qparams& out_qparams, Qint8* out) {
+// Quantize a contigous row of floats and store it as a column in `out`.
+inline void quantize_row_as_col(int row_idx, const float* x, Qparams& out_qparams, Qint8* out, const int stride) {
     const int blocks_per_row = out_qparams.blocks_per_row();
     const int block_size = globs::q8_block_size;
 
@@ -170,7 +171,8 @@ inline void quantize_col(int row_idx, const float* x, Qparams& out_qparams, Qint
          
         for (int j = 0; j < block_size; ++j) {
             const float x_val = x_block[j] * scale;
-            out[i * block_size + j] = static_cast<Qint8>(roundf(x_val));
+            const int out_idx = (i * block_size + j) * stride + row_idx;
+            out[out_idx] = static_cast<Qint8>(roundf(x_val));
         }
 
         out_row_deltas[i] = fp32_to_fp16(delta);

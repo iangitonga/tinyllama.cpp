@@ -46,14 +46,25 @@ def quantize(t: torch.Tensor, q_blk_size: int = 64):
 
     # cvt
     t = torch.round(t * scalars).to(torch.int8)
-
-    t = t.view(d_out, d_in)
+    # n_blocks, blk_size
 
     return deltas.to(torch.float16), t
 
+# 4bits 4bits
+# 0000 0000
+# 1111 0000
+
+"""
+
+s000_0000
+
+s000_0000
+
+"""
+
 
 def write_layer(fout, name: str, w0: torch.Tensor, dtype: str):
-    name = name.encode()
+    name = name.encode()convert_model_to_gten
     # <layer_name_size, layer_name>
     fout.write(itob(len(name)))
     fout.write(name)
@@ -64,19 +75,31 @@ def write_layer(fout, name: str, w0: torch.Tensor, dtype: str):
 
     if dtype == "fp16":
         w0 = w0.to(torch.float16)
+        w0 = w0.numpy().flatten()
+        w0_bytes = w0.tobytes()
+        fout.write(itob(len(w0_bytes)))
+        fout.write(w0_bytes)
     elif dtype == "qint8":
         assert w0.ndim == 2
         deltas, w0 = quantize(w0)
-        deltas_bytes = deltas.numpy().flatten().tobytes()
-        fout.write(itob(len(deltas_bytes), width=4))
-        fout.write(deltas_bytes)
+
+        bytes_size = w0.numel() + deltas.numel() * 2
+        fout.write(bytes_size, width=4)
+
+        w0 = w0.numpy()
+        n_blocks, blk_size = w0.shape
+        assert blk_size == 64
+        assert deltas.numel() == n_blocks
+
+        for i in range(n_blocks):
+            blk_delta_bytes = deltas[i].numpy().tobytes()
+            blk_bytes = w0[i].flatten().tobytes()
+
+            fout.write(blk_delta_bytes)
+            fout.write(blk_bytes)
+        
     else:
         assert(False)
-    
-    w0 = w0.numpy().flatten()
-    w0_bytes = w0.tobytes()
-    fout.write(itob(len(w0_bytes)))
-    fout.write(w0_bytes)
     
 
 def convert_model_to_gten(dtype):

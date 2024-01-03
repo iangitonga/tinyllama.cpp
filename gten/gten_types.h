@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 
+#include "log.h"
 
 
 namespace gten {
@@ -30,14 +31,19 @@ static const Dtype kQint8 = Dtype::Qint8;
 
 
 static const char* dtype_str(Dtype dtype) {
-    if (dtype == kInt32) {
-        return "Int32";
-    } else if(dtype == kQint8) {
-        return "Qint8";
-    } else if (dtype == kFloat16) {
-        return "Float16";
-    } else {
-        return "Float32";
+    switch (dtype) {
+        case kInt32: 
+            return "Int32";
+        case kQint8:
+            return "Qint8";
+        case kFloat16:
+            return "Float16";
+        case kFloat32:
+            return "Float32";
+        default: {
+            GTEN_ASSERT(false);
+            return "";
+        }
     }
 }
 
@@ -109,8 +115,7 @@ inline Float16 fp32_to_fp16(float f) noexcept
 
 
 static float* init_cache() {
-    // This is a memory leak because we never delete the cache but its not a problem
-    // because the cache lasts the entire lifetime of the program.
+    // TODO: fix memory leak.
     float* cache = new float[65536];
     Float16 idx = 0;
     for (int i = 0; i < 65536; i++) {

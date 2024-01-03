@@ -569,9 +569,9 @@ void TinyLlama::print_perf(const int n_pred_tokens)
     std::cout << " " << "Mem usage [total]   : " << std::setw(4) << tensor_mem/1000000 << "MB\n";
     std::cout << " " << "Mem usage [model]   : " << std::setw(4) << weights_mem/1000000 << "MB\n";
     std::cout << " " << "Mem usage [actvs]   : " << std::setw(4) << acv_mem/1000000 << "MB\n";
-    std::cout << "-------------------------------\n\n";
-    std::cout << " " << "Linear time         : " << std::setw(5) << linear_time << "ms\n";
-    std::cout << " " << "Attention time      : " << std::setw(5) << attn_time << "ms\n";
-    std::cout << " " << "Other ops time      : " << std::setw(5) << non_linear_time << "ms\n";
+    std::cout << "-------------------------------\n";
+    std::cout << " " << "Lin time [per tok]  : " << std::setw(5) << linear_time/n_pred_tokens << "ms\n";
+    std::cout << " " << "Attn time [per tok] : " << std::setw(5) << attn_time/n_pred_tokens << "ms\n";
+    std::cout << " " << "Other     [per tok] : " << std::setw(5) << non_linear_time/n_pred_tokens << "ms\n";
     std::cout << "-------------------------------\n\n";
 }

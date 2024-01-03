@@ -93,6 +93,12 @@ public:
         return strides_[i];
     }
 
+    /// Returns the size of the give dimension in bytes.
+    int bstride(int i) const {
+        GTEN_ASSERT(i < int(strides_.size()));
+        return strides_[i] * itemsize();
+    }
+
     size_t nbytes() const { return numel_ * itemsize(); }
 
     const std::vector<int>& shape() const { return shape_; }
