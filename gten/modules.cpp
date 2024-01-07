@@ -49,21 +49,15 @@ Linear::Linear(int n_in, int n_out, int max_ctx, Dtype dtype)
 {
 }
 
-Tensor Linear::forward(const Tensor &inp, const int start_pos, const bool transpose_out) {
+Tensor Linear::forward(const Tensor &inp, const int start_pos) {
     Timer timer{&exec_time};
 
     const int n_ctx = inp.dimsize(0);
     const int n_out = weight.dimsize(0);
     
-    if (transpose_out) {
-        acv.resize({n_out, n_ctx});
-        /// TODO: Allow strides-lock on tensors.
-        acv.set_strides({max_ctx_, 1});
-    } else {
-        acv.resize({n_ctx, n_out});
-    }
+    acv.resize({n_ctx, n_out});
 
-    ops::matmul_2d(inp, weight, acv, start_pos, transpose_out);
+    ops::matmul_2d(inp, weight, acv, start_pos);
 
     return acv;
 }
@@ -190,6 +184,7 @@ SelfAttention::SelfAttention(int n_heads, int n_embd, int n_query_groups, int ma
     value = Linear{n_embd, kv_dim, max_ctx, dtype};
 }
 
+
 Tensor SelfAttention::forward(const Tensor &inp, const int start_pos)
 {
     Tensor q = query.forward(inp, start_pos);
@@ -198,7 +193,7 @@ Tensor SelfAttention::forward(const Tensor &inp, const int start_pos)
     q = q_rope.forward(q, start_pos);
     k = k_rope.forward(k, start_pos);
 
-    Tensor v = value.forward(inp, start_pos, /*transpose_out=*/true);
+    Tensor v = value.forward(inp, start_pos);
 
     const Tensor qkv = masked_qkv_attn(q, k, v, start_pos);
     const Tensor out = qkv_proj.forward(qkv, start_pos);

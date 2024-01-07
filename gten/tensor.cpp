@@ -28,26 +28,29 @@ Tensor::Tensor(const std::vector<int>& shape, Dtype dtype)
     : dtype_{dtype}
 {
     validate_shape(shape);
+    shape_ = shape;
+    set_strides_from_shape(shape);
     const int numel = numel_from_shape(shape);
-    const int alloc_bytes = numel * itemsize();
+    numel_ = numel;
+
+    int alloc_bytes;
+    if (dtype == kQint8 && shape.size() == 2) {
+        // Account for quantisation deltas.
+        GTEN_ASSERT(dimsize(1) % globs::q8_block_size == 0);
+        const int blocks_per_row = dimsize(1) / globs::q8_block_size;
+        const int n_blocks = dimsize(0) * blocks_per_row;
+
+        alloc_bytes = n_blocks * sizeof(Q8Block);
+    } else {
+        alloc_bytes = numel * itemsize();
+    }
 
     void* raw_data_ptr = std::malloc(alloc_bytes);
-    GTEN_ASSERTM(raw_data_ptr, "Failed to allocate %dMB of memory.", alloc_bytes / 1000000)
+    GTEN_ASSERTM(raw_data_ptr, "Failed to allocate %dMB of memory.", alloc_bytes / 1000000);
 
     data_ptr_ = std::shared_ptr<uint8_t>(static_cast<uint8_t*>(raw_data_ptr), tensor_data_deleter);
     storage_size_ = alloc_bytes;
     G_TensorMemAllocated += alloc_bytes;
-    numel_ = numel;
-    shape_ = shape;
-    set_strides_from_shape(shape);
-
-    // QPARAMS
-    if (dtype == kQint8 && ndims() == 2) {
-        const int n_rows = dimsize(0);
-        const int n_cols = dimsize(1);
-        qparams_ = Qparams(n_rows, n_cols);
-        G_TensorMemAllocated += qparams_.nbytes();
-    }
 }
 
 
@@ -125,19 +128,16 @@ void Tensor::set_strides_from_shape(const std::vector<int>& shape) {
     switch (shape.size()) {
         case 1: {
             strides_ = {1};
-            break;
-        }
+        } break;
         case 2: {
             const int d1 = shape[1];
             strides_ = {d1, 1};
-            break;
-        }
+        } break;
         case 3: {
             const int d1 = shape[1];
             const int d2 = shape[2];
             strides_ = {d1*d2, d2, 1};
-            break;
-        }
+        } break;
     }
 }
 

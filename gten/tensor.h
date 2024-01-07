@@ -99,15 +99,11 @@ public:
         return strides_[i] * itemsize();
     }
 
-    size_t nbytes() const { return numel_ * itemsize(); }
+    size_t nbytes() const { return storage_size_; }
 
     const std::vector<int>& shape() const { return shape_; }
 
     bool shape_eq(const std::vector<int>& shape) const { return shape == shape_; }
-
-    const Qparams& qparams() const { return qparams_; }
-
-    Qparams& qparams() { return qparams_; }
 
 private:
     Dtype dtype_ = kFloat32;
@@ -116,7 +112,6 @@ private:
     int numel_ = 0;
     std::vector<int> shape_;
     std::vector<int> strides_;
-    Qparams qparams_;
 
     void validate_shape(const std::vector<int>& shape) const;
     void set_strides_from_shape(const std::vector<int>& shape);

@@ -42,6 +42,8 @@ public:
         }
     }
 
+    
+
     Tensor logits(const Tensor& tokens, const int start_pos=0) {
         if (tokens.numel() > n_ctx_) {
             std::cerr << "Number of prompt tokens (" << tokens.numel() << ") exceed provided maximum ctx size (" << n_ctx_ << ")\n";
@@ -285,22 +287,6 @@ static inline void read_into_weight(
     weight_name.resize(weight_name_size);
     fin.read(reinterpret_cast<char*>(weight_name.data()), weight_name_size);
 
-    if (dtype == kQint8)
-    {
-        GTEN_ASSERT(tensor.dtype() == kQint8);
-        
-        int32_t deltas_bytes;
-        fin.read(reinterpret_cast<char*>(&deltas_bytes), sizeof(deltas_bytes));
-        const int ndeltas = deltas_bytes / sizeof(Float16);
-
-        Qparams qparams = tensor.qparams();
-        const int expected_deltas = qparams.n_deltas();
-        GTEN_ASSERTM(ndeltas == expected_deltas, "expected %d but got %d deltas.", expected_deltas, ndeltas);
-
-        Float16* deltas = qparams.deltas();
-        fin.read(reinterpret_cast<char*>(deltas), deltas_bytes); /// deltas size.
-    }
-
     int32_t weight_payload_size;
     fin.read(reinterpret_cast<char*>(&weight_payload_size), sizeof(weight_payload_size));
 
@@ -541,7 +527,7 @@ void TinyLlama::print_perf(const int n_pred_tokens)
     int64_t weights_mem = 0;
 
     {
-        const auto bytes = [](const Tensor& t) { return t.nbytes() + t.qparams().nbytes(); };
+        const auto bytes = [](const Tensor& t) { return t.nbytes(); };
 
         weights_mem += bytes(tok_emb_.weight);
         weights_mem += bytes(norm_.weight);

@@ -21,7 +21,7 @@ def ftob(floatv):
 # quantized. Each block contains `block-size` numbers. The higher the
 # block-size, the higher the compression but the model performance in
 # terms of perplexity may decrease.
-def quantize(t: torch.Tensor, q_blk_size: int = 64):
+def quantize(t: torch.Tensor, q_blk_size: int = 32):
     assert len(t.shape) == 2, f"Illegal shape: {t.shape}"
     # 2-D tensors transposed. (d_out, d_in)
     d_in = t.shape[1]
@@ -64,7 +64,7 @@ s000_0000
 
 
 def write_layer(fout, name: str, w0: torch.Tensor, dtype: str):
-    name = name.encode()convert_model_to_gten
+    name = name.encode()
     # <layer_name_size, layer_name>
     fout.write(itob(len(name)))
     fout.write(name)
@@ -79,16 +79,16 @@ def write_layer(fout, name: str, w0: torch.Tensor, dtype: str):
         w0_bytes = w0.tobytes()
         fout.write(itob(len(w0_bytes)))
         fout.write(w0_bytes)
-    elif dtype == "qint8":
+    elif dtype == "q8":
         assert w0.ndim == 2
         deltas, w0 = quantize(w0)
 
         bytes_size = w0.numel() + deltas.numel() * 2
-        fout.write(bytes_size, width=4)
+        fout.write(itob(bytes_size, width=4))
 
         w0 = w0.numpy()
         n_blocks, blk_size = w0.shape
-        assert blk_size == 64
+        assert blk_size == 32
         assert deltas.numel() == n_blocks
 
         for i in range(n_blocks):
@@ -108,10 +108,7 @@ def convert_model_to_gten(dtype):
     with open(model_path, "rb") as fin:
         ckpt = torch.load(fin)
 
-    if dtype == "fp16":
-        out_model_path = "tinyllama.fp16.gten"
-    else:
-        out_model_path = f"tinyllama.q8.gten"
+    out_model_path = f"tinyllama.{dtype}.gten"
 
     with open(out_model_path, "wb") as fout:
         fout.write(itob(GTEN_MAGIC_NUMBER, width=8))
@@ -161,7 +158,7 @@ def convert_model_to_gten(dtype):
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("dtype", help="Model name to be converted.", choices=("fp16", "qint8"))
+parser.add_argument("dtype", help="Model name to be converted.", choices=("fp16", "q8"))
 
 args = parser.parse_args()
 convert_model_to_gten(args.dtype)

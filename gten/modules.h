@@ -52,7 +52,7 @@ class Linear {
 public:
     Linear() = default;
     Linear(int d_in, int d_out, int max_ctx, Dtype dtype);
-    Tensor forward(const Tensor& inp, const int start_pos = 0, const bool transpose_out=false);
+    Tensor forward(const Tensor& inp, const int start_pos = 0);
 
 public:
     Tensor weight;
