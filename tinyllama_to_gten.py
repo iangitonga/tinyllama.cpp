@@ -102,9 +102,7 @@ def write_layer(fout, name: str, w0: torch.Tensor, dtype: str):
         assert(False)
     
 
-def convert_model_to_gten(dtype):
-    model_path = "tinyllama.pt"
-
+def convert_model_to_gten(model_path, dtype):
     with open(model_path, "rb") as fin:
         ckpt = torch.load(fin)
 
@@ -158,8 +156,8 @@ def convert_model_to_gten(dtype):
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument("dtype", help="Model name to be converted.", choices=("fp16", "q8"))
+parser.add_argument("mpath", help="Model path to be converted.")
+parser.add_argument("dtype", help="output dtype.", choices=("fp16", "q8"))
 
 args = parser.parse_args()
-convert_model_to_gten(args.dtype)
-
+convert_model_to_gten(args.mpath, args.dtype)

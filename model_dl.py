@@ -18,19 +18,23 @@ DTYPES = (
 
 
 def _download_model(url, model_path):
-    print("Downloading ...")
+    print("Downloading model ...")
     with request.urlopen(url) as source, open(model_path, "wb") as output:
         download_size = int(source.info().get("Content-Length"))
+        download_size_mb = int(download_size / 1000_000)
+        downloaded = 0
         while True:
             buffer = source.read(8192)
             if not buffer:
                 break
 
             output.write(buffer)
-            progress_perc = int(len(buffer) / download_size * 100.0)
+            downloaded += len(buffer)
+            progress_perc = int(downloaded / download_size * 100.0)
+            downloaded_mb = int(downloaded / 1000_000)
             # trick to make it work with jupyter.
-            print(f"\rDownload Progress: {progress_perc}%", end="", flush=True)
-    print("")
+            print(f"\rDownload Progress [{downloaded_mb}MB/{download_size_mb}MB]: {progress_perc}%", end="")
+    print("\n\n")
 
 def download_model(dtype):
     model_name = "tinyllama"
