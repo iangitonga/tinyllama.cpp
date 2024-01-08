@@ -814,12 +814,12 @@ void qkv_matmul(const Tensor& qk, const Tensor& v, Tensor& qkv_out, const int st
 
     for (int qkr = start_pos; qkr < n_ctx; qkr++) {
         for (int h = 0; h < q_heads; h++) {
-            const Qint8* qkr_data = (Qint8*)qk_data + (h * qkst0 + qkr * qkst1);  // qk_row_data
+            const char* qkr_data = qk_data + (h * qkst0 + qkr * qkst1);  // qk_row_data
             
             if (inp_dtype == kQint8) {
-                dequantize_row_delta(qkr_data, qk_row_buf, delta, n_ctx);
+                dequantize_row_delta((Qint8*)qkr_data, qk_row_buf, delta, n_ctx);
             } else {
-                read_row_to_float(qk_data, inp_dtype, qk_row_buf, n_ctx);
+                read_row_to_float(qkr_data, inp_dtype, qk_row_buf, n_ctx);
             }
 
             for (int vc = 0; vc < dhead; vc++) {
