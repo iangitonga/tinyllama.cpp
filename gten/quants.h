@@ -27,7 +27,7 @@ inline Qint8 quantize_single(float x, float delta) {
     const float id = delta ? 1.0f/delta : 0.0f;
 
     const float x0 = x * id;
-    const Qint8 quantized = roundf(x0);
+    const Qint8 quantized = static_cast<Qint8>(roundf(x0));
 
     return quantized;
 }
@@ -79,6 +79,12 @@ void quantize_row(const float* inp, Q8Block* out, const int rowsize) {
     }
 }
 
+void quantize_row_delta(const float* inp, Qint8* out, const float delta, const int rowsize) {
+    for (int i = 0; i < rowsize; i++) {
+        out[i] = quantize_single(inp[i], delta);
+    }
+}
+
 void dequantize_row(const Q8Block* inp, float* out, int rowsize) {
     const int block_size = globs::q8_block_size;
     GTEN_ASSERT(rowsize % block_size == 0);
@@ -89,7 +95,7 @@ void dequantize_row(const Q8Block* inp, float* out, int rowsize) {
     }
 }
 
-inline void dequantize_row(const Qint8* x, float delta, float* out, int size) {
+inline void dequantize_row_delta(const Qint8* x, float* out, float delta, int size) {
     for (int i = 0; i < size; i++) {
         const Qint8 x_val = x[i];
         out[i] = x_val * delta;

@@ -390,9 +390,8 @@ void greedy_sample(std::string& prompt, TinyLlama& model, Tokenizer& tokenizer, 
 
         Timer sample_timer{&model.sample_time};
 
-        const int n_ctx = logits.dimsize(0);
+        const int logits_size = logits.numel();
         const float *logits_data = logits.data_ptr<float>();
-        const int logits_size = model.params.n_vocab;
 
         float max_prob = -std::numeric_limits<float>::infinity();
         int max_index = 0;

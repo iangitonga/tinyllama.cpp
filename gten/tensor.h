@@ -96,7 +96,14 @@ public:
     /// Returns the size of the give dimension in bytes.
     int bstride(int i) const {
         GTEN_ASSERT(i < int(strides_.size()));
-        return strides_[i] * itemsize();
+        if (dtype_ == kQint8) {
+            if (strides_[i] == 1) {
+                return 1;
+            }
+            return (strides_[i]/globs::q8_block_size) * sizeof(Q8Block);
+        } else {
+            return strides_[i] * itemsize();
+        }
     }
 
     size_t nbytes() const { return storage_size_; }

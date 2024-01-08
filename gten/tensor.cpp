@@ -180,9 +180,9 @@ void Tensor::set_strides(const std::vector<int>& strides)
 {
     GTEN_ASSERTM(strides.size() == shape_.size(), "The given strides ndims must match shape ndims.");
     for (int i = 0; i < int(strides.size()); i++) {
-        if (strides[i] <= 0) {
-            GTEN_ASSERTM(false, "The stride at index %d, `%d` is invalid.", i, strides[i]);
-        }
+    //     if (strides[i] <= 0) {
+    //         GTEN_ASSERTM(false, "The stride at index %d, `%d` is invalid.", i, strides[i]);
+    //     }
     }
     strides_ = strides;
 }

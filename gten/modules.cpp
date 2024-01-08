@@ -71,7 +71,12 @@ Tensor EmbeddingLinear::forward(const Tensor& inp)
 {
     Timer timer{&exec_time};
 
-    ops::emb_matmul(inp, weight, acv);
+    // Hack to allow us to compute the logits for the last token only.
+    acv.set_strides({0});
+    const int start_pos = inp.dimsize(0) - 1;
+    ops::matmul_2d(inp, weight, acv, start_pos);
+    acv.set_strides({1});
+
     return acv;
 }
 
