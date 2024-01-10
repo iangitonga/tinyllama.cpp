@@ -8,9 +8,9 @@
 
 namespace gten {
 
-Embedding::Embedding(int n_vocab, int n_embd, int max_ctx, Dtype dtype)
-    : weight{Tensor({n_vocab, n_embd}, dtype)},
-      emb_acv{Tensor({max_ctx, n_embd}, dtype)}
+Embedding::Embedding(int n_vocab, int n_embd, int max_ctx, ModuleDtype dtype)
+    : weight{Tensor({n_vocab, n_embd}, dtype.wdtype)},
+      emb_acv{Tensor({max_ctx, n_embd}, dtype.adtype)}
 {
 }
 
@@ -42,9 +42,9 @@ Tensor Residual::forward(const Tensor& inp0, const Tensor& inp1, const int start
     return acv;
 }
 
-Linear::Linear(int n_in, int n_out, int max_ctx, Dtype dtype)
-    : weight{Tensor({n_out, n_in}, dtype)},
-      acv{Tensor({max_ctx, n_out}, dtype)},
+Linear::Linear(int n_in, int n_out, int max_ctx, ModuleDtype dtype)
+    : weight{Tensor({n_out, n_in}, dtype.wdtype)},
+      acv{Tensor({max_ctx, n_out}, dtype.adtype)},
       max_ctx_{max_ctx}
 {
 }
@@ -62,8 +62,8 @@ Tensor Linear::forward(const Tensor &inp, const int start_pos) {
     return acv;
 }
 
-EmbeddingLinear::EmbeddingLinear(int n_embd, int n_vocab, int max_ctx, Dtype dtype)
-    : weight{Tensor({n_vocab, n_embd}, dtype)}, acv{Tensor({n_vocab}, kFloat32)}
+EmbeddingLinear::EmbeddingLinear(int n_embd, int n_vocab, int max_ctx, ModuleDtype dtype)
+    : weight{Tensor({n_vocab, n_embd}, dtype.wdtype)}, acv{Tensor({n_vocab}, kFloat32)}
 {
 }
 
@@ -80,8 +80,8 @@ Tensor EmbeddingLinear::forward(const Tensor& inp)
     return acv;
 }
 
-RMSNorm::RMSNorm(int d_in, int max_ctx, Dtype dtype)
-    : weight{Tensor({d_in}, kFloat16)}, acv{Tensor({max_ctx, d_in}, dtype)}
+RMSNorm::RMSNorm(int d_in, int max_ctx, ModuleDtype dtype)
+    : weight{Tensor({d_in}, kFloat16)}, acv{Tensor({max_ctx, d_in}, dtype.adtype)}
 {
 }
 
@@ -174,11 +174,11 @@ Tensor RotaryEmbedding::forward(Tensor& inp, const int start_pos)
 }
 
 
-SelfAttention::SelfAttention(int n_heads, int n_embd, int n_query_groups, int max_ctx, Dtype dtype)
+SelfAttention::SelfAttention(int n_heads, int n_embd, int n_query_groups, int max_ctx, ModuleDtype dtype)
     : query{Linear(n_embd, n_embd, max_ctx, dtype)},
       qkv_proj{Linear(n_embd, n_embd, max_ctx, dtype)},
-      qk_acv{Tensor({n_heads, max_ctx, max_ctx}, dtype)},
-      qkv_acv{Tensor({max_ctx, n_embd}, dtype)},
+      qk_acv{Tensor({n_heads, max_ctx, max_ctx}, dtype.adtype)},
+      qkv_acv{Tensor({max_ctx, n_embd}, dtype.adtype)},
       q_rope{RotaryEmbedding{n_embd/n_heads, /*inplace=*/true}},
       k_rope{RotaryEmbedding{n_embd/n_heads, /*inplace=*/true}},
       n_heads_{n_heads}, max_ctx_{max_ctx}
@@ -221,17 +221,17 @@ Tensor SelfAttention::masked_qkv_attn(const Tensor& q, const Tensor& k, const Te
     return qkv_acv;
 }
 
-AttentionBlock::AttentionBlock(int n_heads, int n_embd, int n_query_groups, int n_mlp, int max_ctx, Dtype dtype)
+AttentionBlock::AttentionBlock(int n_heads, int n_embd, int n_query_groups, int n_mlp, int max_ctx, ModuleDtype dtype)
     : attn_norm{RMSNorm(n_embd, max_ctx, dtype)},
       attn{SelfAttention(n_heads, n_embd, n_query_groups, max_ctx, dtype)},
-      inp_res{Residual(max_ctx, n_embd, dtype)},
+      inp_res{Residual(max_ctx, n_embd, dtype.adtype)},
       ffn_norm{RMSNorm(n_embd, max_ctx, dtype)},
-      ffn_mul{Multiply(max_ctx, n_mlp, dtype, /*inplace=*/true)},
+      ffn_mul{Multiply(max_ctx, n_mlp, dtype.adtype, /*inplace=*/true)},
       ffn_gate_proj{Linear(n_embd, n_mlp, max_ctx, dtype)},
       ffn_up_proj{Linear(n_embd, n_mlp, max_ctx, dtype)},
       ffn_down_proj{Linear(n_mlp, n_embd, max_ctx, dtype)},
-      attn_res{Residual(max_ctx, n_embd, dtype)},
-      ffn_silu{SiLU(max_ctx, n_mlp, dtype, /*inplace=*/true)}
+      attn_res{Residual(max_ctx, n_embd, dtype.adtype)},
+      ffn_silu{SiLU(max_ctx, n_mlp, dtype.adtype, /*inplace=*/true)}
 {
 }
 

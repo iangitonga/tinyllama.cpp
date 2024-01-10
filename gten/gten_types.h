@@ -15,12 +15,14 @@ namespace gten {
 typedef int32_t Int32;
 typedef uint16_t Float16;
 typedef int8_t Qint8;
+typedef uint8_t Qint4;
 
 enum class Dtype {
     Int32,
     Float16,
     Float32,
-    Qint8
+    Qint8,
+    Qint4
 };
 
 // Convenient shorthands for the enum class above.
@@ -28,6 +30,7 @@ static const Dtype kInt32 = Dtype::Int32;
 static const Dtype kFloat16 = Dtype::Float16;
 static const Dtype kFloat32 = Dtype::Float32;
 static const Dtype kQint8 = Dtype::Qint8;
+static const Dtype kQint4 = Dtype::Qint4;
 
 
 static const char* dtype_str(Dtype dtype) {
@@ -36,6 +39,8 @@ static const char* dtype_str(Dtype dtype) {
             return "Int32";
         case kQint8:
             return "Qint8";
+        case kQint4:
+            return "Qint4";
         case kFloat16:
             return "Float16";
         case kFloat32:

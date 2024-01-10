@@ -35,13 +35,20 @@ Tensor::Tensor(const std::vector<int>& shape, Dtype dtype)
 
     int alloc_bytes;
     if (dtype == kQint8 && shape.size() == 2) {
-        // Account for quantisation deltas.
         GTEN_ASSERT(dimsize(1) % globs::q8_block_size == 0);
         const int blocks_per_row = dimsize(1) / globs::q8_block_size;
         const int n_blocks = dimsize(0) * blocks_per_row;
 
         alloc_bytes = n_blocks * sizeof(Q8Block);
-    } else {
+    } else if (dtype == kQint4) {
+        GTEN_ASSERT(ndims() == 2);
+        GTEN_ASSERT(dimsize(1) % globs::q8_block_size == 0);
+        const int blocks_per_row = dimsize(1) / globs::q8_block_size;
+        const int n_blocks = dimsize(0) * blocks_per_row;
+
+        alloc_bytes = n_blocks * sizeof(Q4Block);
+    }
+    else {
         alloc_bytes = numel * itemsize();
     }
 

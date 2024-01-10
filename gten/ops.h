@@ -37,10 +37,15 @@ void read_row_to_float(const char* inp, Dtype inp_dtype, float* out_buf, const i
 {
     switch (inp_dtype)
     {
+        case kQint4: 
+        {
+            const Q4Block* inp_data = reinterpret_cast<const Q4Block*>(inp);
+            q4_dequantize_row(inp_data, out_buf, rowsize);
+        } break;
         case kQint8:
         {
             const Q8Block* inp_data = reinterpret_cast<const Q8Block*>(inp);
-            dequantize_row(inp_data, out_buf, rowsize);
+            q8_dequantize_row(inp_data, out_buf, rowsize);
         } break;
         case kFloat16:
         {
@@ -66,7 +71,7 @@ void write_row_from_float(float* inp, char* out, Dtype out_dtype, int rowsize) {
         case kQint8:
         {
             Q8Block* out_data = reinterpret_cast<Q8Block*>(out);
-            quantize_row(inp, out_data, rowsize);
+            q8_quantize_row(inp, out_data, rowsize);
         } break;
         case kFloat16:
         {
@@ -307,14 +312,53 @@ static float vec_dot_product_q8(const Q8Block* inp0, const Q8Block* inp1, const 
 }
 
 
-float vec_dot_product(Dtype inp_dtype, const char* inp0, const char* inp1, int vecsize)
+static float vec_dot_product_q8_q4(const Q8Block* inp0, const Q4Block* inp1, const int vec_size)
 {
-    switch (inp_dtype)
+    const int block_size = globs::q8_block_size;
+    GTEN_ASSERT(block_size == globs::q4_block_size && vec_size % block_size == 0);
+    const int n_blocks = vec_size / block_size;
+
+    float dot_prod = 0.0f;
+
+    for (int i = 0; i < n_blocks; i++)
+    {
+        const Q8Block* b0 = inp0 + i;
+        const Q4Block* b1 = inp1 + i;
+
+        int block_dot_prod = 0;
+        for (int j = 0; j < block_size/2; j += 1)
+        {
+            const Qint4 b1_x = b1->data[j];
+            const Qint8 b1_x0 = q4_unpack_high(b1_x);
+            const Qint8 b1_x1 = q4_unpack_high(b1_x << 4);
+
+            block_dot_prod += b0->data[j*2] * b1_x0;
+            block_dot_prod += b0->data[j*2+1] * b1_x1;
+        }
+
+        const float b0_delta = fp16_to_fp32(b0->delta);
+        const float b1_delta = fp16_to_fp32(b1->delta);
+        dot_prod += block_dot_prod * b0_delta * b1_delta;
+    }
+
+    return dot_prod;
+}
+
+
+float vec_dot_product(const char* inp0, Dtype inp0_dtype, const char* inp1, Dtype inp1_dtype, int vecsize)
+{
+    switch (inp0_dtype)
     {
         case kQint8: {
-            const Q8Block* inp0_data = reinterpret_cast<const Q8Block*>(inp0);
-            const Q8Block* inp1_data = reinterpret_cast<const Q8Block*>(inp1);
-            return vec_dot_product_q8(inp0_data, inp1_data, vecsize);
+            if (inp1_dtype == kQint4) {
+                const Q8Block* inp0_data = reinterpret_cast<const Q8Block*>(inp0);
+                const Q4Block* inp1_data = reinterpret_cast<const Q4Block*>(inp1);
+                return vec_dot_product_q8_q4(inp0_data, inp1_data, vecsize);
+            } else {
+                const Q8Block* inp0_data = reinterpret_cast<const Q8Block*>(inp0);
+                const Q8Block* inp1_data = reinterpret_cast<const Q8Block*>(inp1);
+                return vec_dot_product_q8(inp0_data, inp1_data, vecsize);
+            }
         }
         case kFloat16: {
             const Float16* inp0_data = reinterpret_cast<const Float16*>(inp0);
@@ -335,16 +379,23 @@ float vec_dot_product(Dtype inp_dtype, const char* inp0, const char* inp1, int v
 
 static void copy_row(const Tensor& src, Tensor& dest, const int src_row_idx, const int dest_row_idx)
 {
-    const int row_stride = src.bstride(0);
-    const char* src_data = src.data_ptr<char>() + src_row_idx * row_stride;
-    char* dest_data = dest.data_ptr<char>() + dest_row_idx * row_stride;
-    size_t copy_nbytes;
+    const char* src_data = src.data_ptr<char>() + src_row_idx * src.bstride(0);
+    char* dest_data = dest.data_ptr<char>() + dest_row_idx * dest.bstride(0);
+
     if (src.dtype() == kQint8) {
-        copy_nbytes = src.dimsize(1) / globs::q8_block_size * sizeof(Q8Block);
-    } else {
-        copy_nbytes = src.dimsize(1) * src.itemsize();
+        const size_t copy_nbytes = src.dimsize(1) / globs::q8_block_size * sizeof(Q8Block);
+        std::memcpy(dest_data, src_data, copy_nbytes);
+    } else if (src.dtype() == kQint4) {
+        GTEN_ASSERT(dest.dtype() == kQint8);
+        const int rowsize = src.dimsize(1);
+        float* inbuf = g_ops_state.buf(rowsize);
+        read_row_to_float(src_data, kQint4, inbuf, rowsize);
+        write_row_from_float(inbuf, dest_data, kQint8, rowsize);
     }
-    std::memcpy(dest_data, src_data, copy_nbytes);
+    else {
+        const size_t copy_nbytes = src.dimsize(1) * src.itemsize();
+        std::memcpy(dest_data, src_data, copy_nbytes);
+    }
 }
 
 
@@ -373,7 +424,7 @@ void token_embed(const Tensor& weight, const Tensor& tokens, Tensor& out, const 
     const int n_ctx = tokens.dimsize(0);
     const int n_embd = weight.dimsize(1);
     GTEN_ASSERT(out.shape_eq({n_ctx, n_embd}));
-    GTEN_ASSERT(weight.dtype() == out.dtype());
+    // GTEN_ASSERT(weight.dtype() == out.dtype());
 
     tensor_row_index_impl(weight, tokens, out, start_pos);
 }
@@ -386,6 +437,7 @@ void matmul_2d_impl(const Tensor& inp, const Tensor& w, Tensor& out, const int s
     char* out_data = out.data_ptr<char>();
 
     const Dtype inp_dtype = inp.dtype();
+    const Dtype w_dtype = w.dtype();
     const Dtype out_dtype = out.dtype();
 
     const int n_ctx = inp.dimsize(0);
@@ -403,7 +455,7 @@ void matmul_2d_impl(const Tensor& inp, const Tensor& w, Tensor& out, const int s
         for (int c0 = 0; c0 < d_out; c0++)
         {
             const char* w_row_data = w_data + c0*w_st0;
-            const float dot_prod = vec_dot_product(inp_dtype, inp_row_data, w_row_data, n_embd);
+            const float dot_prod = vec_dot_product(inp_row_data, inp_dtype, w_row_data, w_dtype, n_embd);
             out_buf[c0] = dot_prod;
         }
         
@@ -421,7 +473,7 @@ static void matmul_2d(const Tensor& x, const Tensor& w, Tensor& out, const int s
 
     GTEN_ASSERT(x.is_2d());
     GTEN_ASSERT(w.is_2d() && w.dimsize(1) == n_embd);
-    GTEN_ASSERT(x.dtype() == w.dtype());
+    // GTEN_ASSERT(x.dtype() == w.dtype());
     if (out.is_1d()) {
         GTEN_ASSERT(n_ctx - start_pos == 1);
         GTEN_ASSERT(out.shape_eq({n_out}));
@@ -708,7 +760,7 @@ void qk_masked_softmax(const Tensor& q, const Tensor& k, Tensor& qk_out, float s
                 const char* qrow_data = q_data + (h * qst0 + qrow * qst1);
                 const char* kcol_data = k_data + ((h / q_heads_per_group) * kst0 + kcol * kst1); // col_data is contigous.
 
-                const float dot_prod = vec_dot_product(inp_dtype, qrow_data, kcol_data, d_head);
+                const float dot_prod = vec_dot_product(qrow_data, inp_dtype, kcol_data, inp_dtype, d_head);
                 out_buf[kcol] = dot_prod * scale_factor;
             }
 
@@ -745,7 +797,7 @@ void qk_masked_softmax(const Tensor& q, const Tensor& k, Tensor& qk_out, float s
             if (out_dtype == kQint8) {
                 Qint8* out_data_q = reinterpret_cast<Qint8*>(out_data) + h * qkst0 + qrow * qkst1;
                 const float delta = 1.0f / 127.0f;  // quantization delta where amax=1 because it is softmaxed.
-                quantize_row_delta(out_buf, out_data_q, delta, n_ctx);
+                q8_quantize_row_delta(out_buf, out_data_q, delta, n_ctx);
             } else if (out_dtype == kFloat16) {
                 Float16* out_data_f = reinterpret_cast<Float16*>(out_data);
                 write_row_from_float(out_buf, out_data + h * qkst0 + qrow * qkst1, out_dtype, n_ctx);
@@ -795,7 +847,7 @@ void qkv_matmul(const Tensor& qk, const Tensor& v, Tensor& qkv_out, const int st
                 
                 for (int k = 0; k < globs::q8_block_size; k++) {
                     const int col_idx = j * globs::q8_block_size + k;
-                    v_buf[i + col_idx * n_ctx] = dequantize_single(blk->data[k], block_delta);
+                    v_buf[i + col_idx * n_ctx] = q8_dequantize_single(blk->data[k], block_delta);
                 }
             }   
         }
@@ -817,7 +869,7 @@ void qkv_matmul(const Tensor& qk, const Tensor& v, Tensor& qkv_out, const int st
             const char* qkr_data = qk_data + (h * qkst0 + qkr * qkst1);  // qk_row_data
             
             if (inp_dtype == kQint8) {
-                dequantize_row_delta((Qint8*)qkr_data, qk_row_buf, delta, n_ctx);
+                q8_dequantize_row_delta((Qint8*)qkr_data, qk_row_buf, delta, n_ctx);
             } else {
                 read_row_to_float(qkr_data, inp_dtype, qk_row_buf, n_ctx);
             }

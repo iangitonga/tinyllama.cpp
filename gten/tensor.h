@@ -96,13 +96,23 @@ public:
     /// Returns the size of the give dimension in bytes.
     int bstride(int i) const {
         GTEN_ASSERT(i < int(strides_.size()));
-        if (dtype_ == kQint8) {
-            if (strides_[i] == 1) {
-                return 1;
+
+        switch (dtype_)
+        {
+            case kQint4: {
+                if (strides_[i] == 1) {
+                    return 1;
+                }
+                return (strides_[i]/globs::q4_block_size) * sizeof(Q4Block);
             }
-            return (strides_[i]/globs::q8_block_size) * sizeof(Q8Block);
-        } else {
-            return strides_[i] * itemsize();
+            case kQint8: {
+                if (strides_[i] == 1) {
+                    return 1;
+                }
+                return (strides_[i]/globs::q8_block_size) * sizeof(Q8Block);
+            }
+            default:
+                return strides_[i] * itemsize();
         }
     }
 

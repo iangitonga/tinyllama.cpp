@@ -21,7 +21,7 @@ def ftob(floatv):
 # quantized. Each block contains `block-size` numbers. The higher the
 # block-size, the higher the compression but the model performance in
 # terms of perplexity may decrease.
-def quantize(t: torch.Tensor, q_blk_size: int = 32):
+def q8_quantize(t: torch.Tensor, q_blk_size: int = 32):
     assert len(t.shape) == 2, f"Illegal shape: {t.shape}"
     # 2-D tensors transposed. (d_out, d_in)
     d_in = t.shape[1]
@@ -50,17 +50,63 @@ def quantize(t: torch.Tensor, q_blk_size: int = 32):
 
     return deltas.to(torch.float16), t
 
-# 4bits 4bits
-# 0000 0000
-# 1111 0000
+# Map that represents [-7, -6, ..., 7] packed into 4 higher bits of int8 values.
+# The format is {sign_bit}{data_bit}{data_bit}{data_bit}
+int8_to_int4_high = torch.tensor([
+    0b11110000, 0b11100000, 0b11010000, 0b11000000, 0b10110000,
+    0b10100000, 0b10010000, 0b10000000, 0b00010000, 0b00100000,
+    0b00110000, 0b01000000, 0b01010000, 0b01100000, 0b01110000]).to(torch.int8)
 
-"""
+# Map that represents [-7, -6, ..., 7] packed into 4 lower bits of int8 values.
+# The format is {sign_bit}{data_bit}{data_bit}{data_bit}
+int8_to_int4_low = torch.tensor([
+    0b00001111, 0b00001110, 0b00001101, 0b00001100, 0b00001011,
+    0b00001010, 0b00001001, 0b00001000, 0b00000001, 0b00000010,
+    0b00000011, 0b00000100, 0b00000101, 0b00000110, 0b00000111]).to(torch.int8)
 
-s000_0000
 
-s000_0000
+def q4_quantize(t: torch.Tensor): # [min, max] -> [-7, 7]
+    q_blk_size = 32
+    assert len(t.shape) == 2, f"Illegal shape: {t.shape}"
+    # 2-D tensors transposed. (d_out, d_in)
+    d_in = t.shape[1]
+    assert d_in % q_blk_size == 0, f"Illegal d_in: {d_in}"
 
-"""
+    # reshape to d_out, D, Q8_BLOCK_SIZE => Q8_BLOCK_SIZE, d_out*D
+    d_out = t.shape[0]
+    n_blocks_per_row = d_in // q_blk_size
+    n_blocks = n_blocks_per_row * d_out
+    t = t.view(n_blocks, q_blk_size)
+
+    # compute deltas for each block.
+    absmax = t.abs().amax(dim=1)
+    deltas = absmax / 7.0
+    deltas = deltas.to(torch.float32)
+
+    scalars = deltas.clone().view(n_blocks)
+    # mask indices prevents division by zero by dividing only non-zero values.
+    non_zero_idxs = scalars != 0
+    scalars[non_zero_idxs] = 1.0 / scalars[non_zero_idxs]
+    scalars = scalars.view(n_blocks, 1)
+
+    # cvt
+    t = torch.round(t * scalars).to(torch.int8)
+    # print(t)
+    assert t.max() <= 7 and t.min() >= -7
+    t = t.view(n_blocks, q_blk_size//2, 2)
+    # split adjacent values in each block.
+    t0 = t[:,:,0]
+    t1 = t[:,:,1]
+    
+    # +7 turns min value: -7 to index 0, -6 to 1 and so forth to allow map indexing.
+    high_packed_indices = t0.view(-1).to(torch.int) + 7
+    high_packed = int8_to_int4_high[high_packed_indices]
+    low_packed_indices = t1.view(-1).to(torch.int) + 7
+    low_packed = int8_to_int4_low[low_packed_indices]
+    packed_4bit = high_packed | low_packed
+    t = packed_4bit.view(n_blocks, q_blk_size//2)
+
+    return deltas.to(torch.float16), t
 
 
 def write_layer(fout, name: str, w0: torch.Tensor, dtype: str):
@@ -81,7 +127,7 @@ def write_layer(fout, name: str, w0: torch.Tensor, dtype: str):
         fout.write(w0_bytes)
     elif dtype == "q8":
         assert w0.ndim == 2
-        deltas, w0 = quantize(w0)
+        deltas, w0 = q8_quantize(w0)
 
         bytes_size = w0.numel() + deltas.numel() * 2
         fout.write(itob(bytes_size, width=4))
@@ -89,6 +135,24 @@ def write_layer(fout, name: str, w0: torch.Tensor, dtype: str):
         w0 = w0.numpy()
         n_blocks, blk_size = w0.shape
         assert blk_size == 32
+        assert deltas.numel() == n_blocks
+
+        for i in range(n_blocks):
+            blk_delta_bytes = deltas[i].numpy().tobytes()
+            blk_bytes = w0[i].flatten().tobytes()
+
+            fout.write(blk_delta_bytes)
+            fout.write(blk_bytes)
+    elif dtype == "q4":
+        assert w0.ndim == 2
+        deltas, w0 = q4_quantize(w0)
+
+        bytes_size = w0.numel() + deltas.numel() * 2
+        fout.write(itob(bytes_size, width=4))
+
+        w0 = w0.numpy()
+        n_blocks, blk_size = w0.shape
+        assert blk_size == 32 // 2
         assert deltas.numel() == n_blocks
 
         for i in range(n_blocks):
@@ -157,7 +221,7 @@ def convert_model_to_gten(model_path, dtype):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("mpath", help="Model path to be converted.")
-parser.add_argument("dtype", help="output dtype.", choices=("fp16", "q8"))
+parser.add_argument("dtype", help="output dtype.", choices=("fp16", "q8", "q4"))
 
 args = parser.parse_args()
 convert_model_to_gten(args.mpath, args.dtype)

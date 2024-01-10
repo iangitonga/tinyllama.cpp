@@ -7,11 +7,17 @@
 
 namespace gten {
 
+
+struct ModuleDtype {
+    Dtype wdtype;
+    Dtype adtype;
+};
+
 /// Provides an embedding table lookup for tokens.
 class Embedding {
 public:
     Embedding() = default;
-    Embedding(int n_vocab, int d_embed, int max_ctx, Dtype dtype);
+    Embedding(int n_vocab, int d_embed, int max_ctx, ModuleDtype dtype);
 
     /// Returns the embeddings of the given tokens. The input tensor must be of shape
     /// (n_ctx,) and the output tensor is of shape (n_ctx, d_embed).
@@ -26,7 +32,7 @@ public:
 
 class RMSNorm {
 public:
-    RMSNorm(int d_in, int max_ctx, Dtype dtype);
+    RMSNorm(int d_in, int max_ctx, ModuleDtype dtype);
     Tensor forward(const Tensor& inp, const int start_pos = 0);
 
 public:
@@ -51,7 +57,7 @@ public:
 class Linear {
 public:
     Linear() = default;
-    Linear(int d_in, int d_out, int max_ctx, Dtype dtype);
+    Linear(int d_in, int d_out, int max_ctx, ModuleDtype dtype);
     Tensor forward(const Tensor& inp, const int start_pos = 0);
 
 public:
@@ -67,7 +73,7 @@ private:
 class EmbeddingLinear {
 public:
     EmbeddingLinear() = default;
-    EmbeddingLinear(int n_embd, int n_vocab, int max_ctx, Dtype dtype);
+    EmbeddingLinear(int n_embd, int n_vocab, int max_ctx, ModuleDtype dtype);
     Tensor forward(const Tensor& inp);
 
 public:
@@ -118,7 +124,7 @@ private:
 
 class SelfAttention {
 public:
-    SelfAttention(int n_heads, int n_embed, int n_query_groups, int max_ctx, Dtype dtype);
+    SelfAttention(int n_heads, int n_embed, int n_query_groups, int max_ctx, ModuleDtype dtype);
     Tensor forward(const Tensor& inp, const int start_pos);
 
 public:
@@ -143,7 +149,7 @@ private:
 
 class AttentionBlock {
 public:
-    AttentionBlock(int n_heads, int d_embed, int n_query_groups, int n_mlp, int max_ctx, Dtype dtype);
+    AttentionBlock(int n_heads, int d_embed, int n_query_groups, int n_mlp, int max_ctx, ModuleDtype dtype);
     Tensor forward(Tensor& inp, const int start_pos);
     Tensor ffn_forward(const Tensor& inp, const int start_pos=0);
 

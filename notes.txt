@@ -1,5 +1,2 @@
-- Implement 4-bit quantized version.
-
-
-- Improve transposed and permuted tensors ops.
-- Utilise tables, exp, silu, etc qk optimise softmax
+TODO:
+ - Optimise 4-bit dequantisation and dot product.

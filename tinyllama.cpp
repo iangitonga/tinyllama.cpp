@@ -23,16 +23,16 @@ struct TinyLLamaParams {
 class TinyLlama {
 public:
     const TinyLLamaParams params = TinyLLamaParams{};
-    Dtype dtype_;
+    ModuleDtype dtype_;
     int n_ctx_;
 
 public:
-    TinyLlama(const int n_ctx, Dtype dtype)
+    TinyLlama(const int n_ctx, ModuleDtype dtype)
         : n_ctx_{n_ctx},
           dtype_{dtype},
           tok_emb_{Embedding(params.n_vocab, params.n_embd, n_ctx, dtype)},
-          norm_{RMSNorm(params.n_embd, n_ctx, dtype)},
-          lm_head_{EmbeddingLinear{params.n_embd, params.n_vocab, n_ctx, dtype}}
+          norm_{RMSNorm(params.n_embd, n_ctx, {kFloat16, dtype.adtype})},
+          lm_head_{EmbeddingLinear{params.n_embd, params.n_vocab, n_ctx, {dtype.wdtype, kFloat32}}}
     {
         blocks_.reserve(params.n_layers);
         for (int i = 0; i < params.n_layers; i++) {
@@ -41,8 +41,6 @@ public:
             );
         }
     }
-
-    
 
     Tensor logits(const Tensor& tokens, const int start_pos=0) {
         if (tokens.numel() > n_ctx_) {
@@ -120,7 +118,8 @@ USAGE:
 
 Optional args. 
 -f16 :     Use float-16 model and inference (2.2GB). [default]
--q8  :     Use 8-bit quantized model (1.1GB) and 8-bit inference.
+-q8  :     Use 8-bit quantized model (1.1GB).
+-q4  :     Use 4-bit quantized model (0.62GB).
 --temp T : Temperature to use during sampling. It must be greater than 0. [default=0.9].
 --npred  N : Number of tokens to generate. Minimum is 1 and max is 2048. [default=512].
 --topk K : Top tokens to randomly select from during prediction. [default=40].
@@ -156,6 +155,10 @@ int main(int argc, char const *argv[])
         else if (arg == "-q8") {
             model_dtype = kQint8;
             model_path = "models/tinyllama.q8.gten";
+        }
+        else if (arg == "-q4") {
+            model_dtype = kQint4;
+            model_path = "models/tinyllama.q4.gten";
         }
         else if (arg == "-p") {
             if (i + 1 < argc) {
@@ -229,7 +232,15 @@ int main(int argc, char const *argv[])
         }
     }
     
-    std::string model_id = model_dtype == kFloat16 ? "fp16" : "q8";
+
+    std::string model_id;
+    if (model_dtype == kFloat16) {
+        model_id = "fp16";
+    } else if (model_dtype == kQint4) {
+        model_id = "q4";
+    } else if (model_dtype == kQint8) {
+        model_id = "q8";
+    } else { GTEN_ASSERT(false); }
 
 #ifdef _WIN32
     int res = std::system(("python model_dl.py " + model_id).c_str());
@@ -244,7 +255,16 @@ int main(int argc, char const *argv[])
     std::ifstream checkpoint{model_path, std::ios::binary};
     GTEN_ASSERT(checkpoint.is_open());
 
-    TinyLlama model{n_predict, model_dtype};
+    ModuleDtype dtype;
+    if (model_dtype == kFloat16) {
+        dtype.wdtype = kFloat16;
+        dtype.adtype = kFloat16;
+    } else {
+        dtype.wdtype = model_dtype;
+        dtype.adtype = kQint8;
+    }
+
+    TinyLlama model{n_predict, dtype};
     model.load_from_ckpt(checkpoint);
 
     Tokenizer tokenizer{"tokenizer.bin", 32000};
@@ -279,7 +299,7 @@ int main(int argc, char const *argv[])
 
 
 static inline void read_into_weight(
-    std::ifstream& fin, gten::Tensor& tensor, Dtype dtype)
+    std::ifstream& fin, gten::Tensor& tensor, ModuleDtype dtype)
 {
     std::string weight_name;
     int32_t weight_name_size;
@@ -357,15 +377,15 @@ void TinyLlama::load_from_ckpt(std::ifstream &ckpt)
 
         // attn_norm
         read_layer_header(ckpt);
-        read_into_weight(ckpt, block.attn_norm.weight, kFloat16);
+        read_into_weight(ckpt, block.attn_norm.weight, {kFloat16, dtype_.adtype});
 
         // ffn_norm
         read_layer_header(ckpt);
-        read_into_weight(ckpt, block.ffn_norm.weight, kFloat16);
+        read_into_weight(ckpt, block.ffn_norm.weight, {kFloat16, dtype_.adtype});
     }
     
     read_layer_header(ckpt);
-    read_into_weight(ckpt, norm_.weight, kFloat16);
+    read_into_weight(ckpt, norm_.weight, {kFloat16, dtype_.adtype});
 
     read_layer_header(ckpt);
     read_into_weight(ckpt, lm_head_.weight, dtype_);
