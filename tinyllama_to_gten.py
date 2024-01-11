@@ -50,20 +50,6 @@ def q8_quantize(t: torch.Tensor, q_blk_size: int = 32):
 
     return deltas.to(torch.float16), t
 
-# Map that represents [-7, -6, ..., 7] packed into 4 higher bits of int8 values.
-# The format is {sign_bit}{data_bit}{data_bit}{data_bit}
-int8_to_int4_high = torch.tensor([
-    0b11110000, 0b11100000, 0b11010000, 0b11000000, 0b10110000,
-    0b10100000, 0b10010000, 0b10000000, 0b00010000, 0b00100000,
-    0b00110000, 0b01000000, 0b01010000, 0b01100000, 0b01110000]).to(torch.int8)
-
-# Map that represents [-7, -6, ..., 7] packed into 4 lower bits of int8 values.
-# The format is {sign_bit}{data_bit}{data_bit}{data_bit}
-int8_to_int4_low = torch.tensor([
-    0b00001111, 0b00001110, 0b00001101, 0b00001100, 0b00001011,
-    0b00001010, 0b00001001, 0b00001000, 0b00000001, 0b00000010,
-    0b00000011, 0b00000100, 0b00000101, 0b00000110, 0b00000111]).to(torch.int8)
-
 
 def q4_quantize(t: torch.Tensor): # [min, max] -> [-7, 7]
     q_blk_size = 32
@@ -89,21 +75,17 @@ def q4_quantize(t: torch.Tensor): # [min, max] -> [-7, 7]
     scalars[non_zero_idxs] = 1.0 / scalars[non_zero_idxs]
     scalars = scalars.view(n_blocks, 1)
 
-    # cvt
-    t = torch.round(t * scalars).to(torch.int8)
+    # + 7 pushes -7 -> 0, -6 -> 1, etc.
+    t = torch.round(t * scalars) + 7
+    assert t.max() <= 14 and t.min() >= 0
+    t = t.to(torch.uint8)
     # print(t)
-    assert t.max() <= 7 and t.min() >= -7
-    t = t.view(n_blocks, q_blk_size//2, 2)
-    # split adjacent values in each block.
-    t0 = t[:,:,0]
-    t1 = t[:,:,1]
+    t = t.view(n_blocks, 2, -1)
+    # split the block into two sub-blocks.
+    t0 = t[::,0]
+    t1 = t[::,1]
     
-    # +7 turns min value: -7 to index 0, -6 to 1 and so forth to allow map indexing.
-    high_packed_indices = t0.view(-1).to(torch.int) + 7
-    high_packed = int8_to_int4_high[high_packed_indices]
-    low_packed_indices = t1.view(-1).to(torch.int) + 7
-    low_packed = int8_to_int4_low[low_packed_indices]
-    packed_4bit = high_packed | low_packed
+    packed_4bit = (t0 << 4) | (t1 & 0b00001111)
     t = packed_4bit.view(n_blocks, q_blk_size//2)
 
     return deltas.to(torch.float16), t

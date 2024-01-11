@@ -137,7 +137,7 @@ int main(int argc, char const *argv[])
     Dtype model_dtype = kFloat16;
     std::string model_path = "models/tinyllama.fp16.gten";
     std::string prompt = "";
-    int n_predict = 512;
+    int n_predict = 768;
     bool use_greedy_sampler = false;
     float sampling_temp = 0.9f;
     int topk = 40;

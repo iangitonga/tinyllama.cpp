@@ -318,6 +318,76 @@ static float vec_dot_product_q8_q4(const Q8Block* inp0, const Q4Block* inp1, con
     GTEN_ASSERT(block_size == globs::q4_block_size && vec_size % block_size == 0);
     const int n_blocks = vec_size / block_size;
 
+#ifdef GTEN_SIMD_AVX
+    GTEN_ASSERT(block_size % 16 == 0);
+    // Dot product accumulator with 4 slots. The sum of the four accumulators gives the
+    // dot product.
+    __m128 dot_accum = _mm_set1_ps(0.0f);
+
+    for (int i = 0; i < n_blocks; i++)
+    {
+        const Q8Block* a0 = inp0 + i;
+        const Q4Block* b0 = inp1 + i;
+
+        // Integer dot product accumulator for current block.
+        __m128i blk_dot_accum = _mm_set1_epi32(0);
+
+        const Qint8* a0_data = a0->data;
+        const __m128i a00 = _mm_loadu_si64(a0_data);
+        const __m128i a01 = _mm_loadu_si64(a0_data + 8);
+        const __m128i a02 = _mm_loadu_si64(a0_data + 16);
+        const __m128i a03 = _mm_loadu_si64(a0_data + 24);
+
+        // Convert 8 quants in the lower half to 16-bit ints.
+        const __m128i a04 = _mm_cvtepi8_epi16(a00);
+        const __m128i a05 = _mm_cvtepi8_epi16(a01);
+        const __m128i a06 = _mm_cvtepi8_epi16(a02);
+        const __m128i a07 = _mm_cvtepi8_epi16(a03);
+
+        // load 16 bytes => 
+        // load into lower 64 bits.
+        const __m128i b00 = _mm_loadu_si64(b0->data);
+        const __m128i b01 = _mm_loadu_si64(b0->data + 8);
+
+        const __m128i b02 = _mm_cvtepu8_epi16(b00);
+        const __m128i b03 = _mm_cvtepu8_epi16(b01);
+
+        const __m128i add_vec = _mm_set1_epi16(-7);
+        const __m128i b04 = _mm_add_epi16(_mm_srli_epi16(b02, 4), add_vec);
+        const __m128i b05 = _mm_add_epi16(_mm_srli_epi16(b03, 4), add_vec);
+
+        const __m128i and_vec = _mm_set1_epi16(0b0000000000001111);
+        const __m128i b06 = _mm_add_epi16(_mm_and_si128(b02, and_vec), add_vec);
+        const __m128i b07 = _mm_add_epi16(_mm_and_si128(b03, and_vec), add_vec);
+
+        // Multiply the 8 16-bit ints to obtain 8 32-bit ints and add adjacent
+        // values to obtain 4 32-bit ints.
+        // TODO: Can we instead do 16-bit to 16-bit e.g _mullo_epi16
+        const __m128i c00 = _mm_madd_epi16(a04, b04);
+        const __m128i c01 = _mm_madd_epi16(a05, b05);
+        const __m128i c02 = _mm_madd_epi16(a06, b06);
+        const __m128i c03 = _mm_madd_epi16(a07, b07);
+
+        // Add the results and add the output to the accumulator.
+        const __m128i c05 = _mm_add_epi32(c00, c01);
+        const __m128i c06 = _mm_add_epi32(c05, _mm_add_epi32(c02, c03));
+        blk_dot_accum = _mm_add_epi32(blk_dot_accum, c06);
+
+
+        const __m128 blk_dot_accum_f = _mm_cvtepi32_ps(blk_dot_accum);
+        // const __m128 a_blk_delta = _mm_broadcast_ss(a_ds + i);
+        // const __m128 b_blk_delta = _mm_broadcast_ss(b_ds + i); 
+        // const __m128 ab_blk_delta = _mm_mul_ps(a_blk_delta, b_blk_delta);
+        const __m128 block_delta_multiplier = _mm_set1_ps(fp16_to_fp32(a0->delta) * fp16_to_fp32(b0->delta));
+        dot_accum = _mm_add_ps(dot_accum, _mm_mul_ps(blk_dot_accum_f, block_delta_multiplier));
+    }
+
+    const __m128 dotsum0 = _mm_hadd_ps(dot_accum, dot_accum);
+    const __m128 dotsum1 = _mm_hadd_ps(dotsum0, dotsum0);
+    const float dot_prod = _mm_cvtss_f32(dotsum1);
+
+#else
+
     float dot_prod = 0.0f;
 
     for (int i = 0; i < n_blocks; i++)
@@ -326,20 +396,23 @@ static float vec_dot_product_q8_q4(const Q8Block* inp0, const Q4Block* inp1, con
         const Q4Block* b1 = inp1 + i;
 
         int block_dot_prod = 0;
-        for (int j = 0; j < block_size/2; j += 1)
+        const int half_block_size = block_size / 2;
+        for (int j = 0; j < half_block_size; j += 1)
         {
-            const Qint4 b1_x = b1->data[j];
-            const Qint8 b1_x0 = q4_unpack_high(b1_x);
-            const Qint8 b1_x1 = q4_unpack_high(b1_x << 4);
+            const Qint4 b00 = b1->data[j];
 
-            block_dot_prod += b0->data[j*2] * b1_x0;
-            block_dot_prod += b0->data[j*2+1] * b1_x1;
+            const Qint8 b01 = (b00 >> 4) - 7;
+            const Qint8 b02 = (b00 & 0b00001111) - 7;
+
+            block_dot_prod += b0->data[j] * b01;
+            block_dot_prod += b0->data[j+half_block_size] * b02;
         }
 
         const float b0_delta = fp16_to_fp32(b0->delta);
         const float b1_delta = fp16_to_fp32(b1->delta);
         dot_prod += block_dot_prod * b0_delta * b1_delta;
     }
+#endif
 
     return dot_prod;
 }
@@ -452,6 +525,7 @@ void matmul_2d_impl(const Tensor& inp, const Tensor& w, Tensor& out, const int s
     for (int r0 = start_pos; r0 < n_ctx; r0++) {
         const char* inp_row_data = inp_data + r0*inp_st0;
 
+        #pragma omp parallel for
         for (int c0 = 0; c0 < d_out; c0++)
         {
             const char* w_row_data = w_data + c0*w_st0;

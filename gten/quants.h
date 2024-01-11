@@ -77,30 +77,19 @@ void q8_dequantize_block(const Q8Block* inp, float* out) {
     }
 }
 
-/// TODO: always inline?
-// unpack high 4 bits into a Q8 int to be dequantised.
-inline Qint8 q4_unpack_high(const Qint4 inp) {
-    const bool sign_bit = inp & 0b10000000;
-    // obtain unpacked unsigned value. 
-    const Qint8 unpacked_unsigned = (inp & 0b01111111) >> 4;
-    // Put the sign.
-    const Qint8 unpacked = (unpacked_unsigned ^ -sign_bit) + sign_bit; // unpacked = sign_bit ? -unp_uns : unp_uns;
-    return unpacked;
-}
-
 void q4_dequantize_block(const Q4Block* inp, float* out) {
     const int block_size = globs::q4_block_size;
 
     const float delta = fp16_to_fp32(inp->delta);
-    for (int i = 0; i < block_size/2; i += 1) {
+    const int half_block_size = block_size / 2;
+    for (int i = 0; i < half_block_size; i += 1) {
         const Qint4 packed = inp->data[i];
-        const Qint8 low = q4_unpack_high(packed);
-        const Qint8 high = q4_unpack_high(packed << 4); 
-        out[i*2] = low * delta;
-        out[i*2+1] = high * delta;
+        const Qint8 high = (packed >> 4) - 7;
+        const Qint8 low = (packed & 0b00001111) - 7; 
+        out[i] = high * delta;
+        out[i+half_block_size] = low * delta;
     }
 }
-
 
 void q8_quantize_row(const float* inp, Q8Block* out, const int rowsize) {
     const int block_size = globs::q8_block_size;

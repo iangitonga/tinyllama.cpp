@@ -1,2 +1,8 @@
 TODO:
- - Optimise 4-bit dequantisation and dot product.
+ - Optimised dot product inplementations and multithreading.
+ - Unit tests for all ops.
+ - Implementing other models.
+ - Improve build system to detect avx, etc.
+ - Improve decoding methods.
+ - Allow multiple decoding streams i.e multiple users over a network.
+ - Add GUI.
