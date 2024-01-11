@@ -1,12 +1,12 @@
 # tinyllama.cpp
 ![alt text](./assets/tinyllama.jpeg)
 
-**tinyllama.cpp** is a simple, minimal, pure-C++ implementation of tinyllama inference on CPU. It runs tinyllama
+**tinyllama.cpp** is a simple, minimal, pure-C++ implementation of [TinyLlama-1.1B-Chat-v0.4](https://github.com/jzhang38/TinyLlama) inference on CPU. It runs tinyllama
 model inference on FP16 and 8-bit quantized formats. AVX SIMD utilities for Intel chips are also implemented.
 Supported formats are FP16 (2.2GB), 8-bit (1.2GB) and 4-bit (0.62GB).
 
 
-## Install and Run Tinyllama.
+## Install and Chat with Tinyllama.
 ```
 git clone https://github.com/iangitonga/tinyllama.cpp
 cd tinyllama.cpp/
