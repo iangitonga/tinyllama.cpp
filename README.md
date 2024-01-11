@@ -7,6 +7,9 @@ Supported formats are FP16 (2.2GB), 8-bit (1.2GB) and 4-bit (0.62GB).
 This project is inspired by [llama.cpp](https://github.com/ggerganov/llama.cpp) and [llama.c](https://github.com/karpathy/llama2.c)
 
 
+## Explore Tinyllama.cpp in colab
+See tinyllama in action in colab [HERE](https://colab.research.google.com/drive/1LtYwSimzkO3pxz5lHGrurKf1NoedeXVo).
+
 ## Install and Chat with Tinyllama.
 ```
 git clone https://github.com/iangitonga/tinyllama.cpp
