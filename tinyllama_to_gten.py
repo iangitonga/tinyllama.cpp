@@ -97,7 +97,7 @@ def write_layer(fout, name: str, w0: torch.Tensor, dtype: str):
     fout.write(itob(len(name)))
     fout.write(name)
 
-    w0_name = f"{name.decode()}.weight".encode()
+    w0_name = name
     fout.write(itob(len(w0_name)))
     fout.write(w0_name)
 

@@ -34,10 +34,16 @@ Tensor::Tensor(const std::vector<int>& shape, Dtype dtype)
     numel_ = numel;
 
     int alloc_bytes;
-    if (dtype == kQint8 && shape.size() == 2) {
-        GTEN_ASSERT(dimsize(1) % globs::q8_block_size == 0);
-        const int blocks_per_row = dimsize(1) / globs::q8_block_size;
-        const int n_blocks = dimsize(0) * blocks_per_row;
+    if (dtype == kQint8 && shape.size() != 1) {
+        const int last_dimsize = ndims() == 2 ? dimsize(1) : dimsize(2);
+        const int block_size = globs::q8_block_size;
+        const int blocks_per_row = (last_dimsize % block_size == 0)
+                                   ? last_dimsize / block_size
+                                   : last_dimsize / block_size + 1;
+        
+        const int n_blocks = ndims() == 2
+                             ? dimsize(0) * blocks_per_row
+                             : dimsize(0) * dimsize(1) * blocks_per_row;
 
         alloc_bytes = n_blocks * sizeof(Q8Block);
     } else if (dtype == kQint4) {

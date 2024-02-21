@@ -25,7 +25,7 @@ static_assert(sizeof(Q8Block) == sizeof(Float16) + globs::q8_block_size);
 struct Q4Block
 {
     Float16 delta;
-    Qint8 data[globs::q4_block_size / 2];
+    Qint4 data[globs::q4_block_size / 2];
 };
 
 static_assert(sizeof(Q4Block) == sizeof(Float16) + globs::q4_block_size / 2);
@@ -49,9 +49,7 @@ inline float q8_dequantize_single(Qint8 x, float delta) {
     return x * delta;
 }
 
-void q8_quantize_block(const float* inp, Q8Block* out) {
-    const int block_size = globs::q8_block_size;
-
+void q8_quantize_block(const float* inp, Q8Block* out, const int block_size) {
     float absmax = 0;
     for (int j = 0; j < block_size; j++) {
         const float x = inp[j];
@@ -68,8 +66,8 @@ void q8_quantize_block(const float* inp, Q8Block* out) {
 }
 
 
-void q8_dequantize_block(const Q8Block* inp, float* out) {
-    const int block_size = globs::q8_block_size;
+void q8_dequantize_block(const Q8Block* inp, float* out, const int block_size) {
+    //  = globs::q8_block_size;
 
     const float delta = fp16_to_fp32(inp->delta);
     for (int i = 0; i < block_size; i++) {
@@ -93,14 +91,21 @@ void q4_dequantize_block(const Q4Block* inp, float* out) {
 
 void q8_quantize_row(const float* inp, Q8Block* out, const int rowsize) {
     const int block_size = globs::q8_block_size;
-    GTEN_ASSERT(rowsize % block_size == 0);
     const int n_blocks = rowsize / block_size;
 
     for (int i = 0; i < n_blocks; i++) {
         const float* inp_block_data = inp + i * block_size;
         Q8Block* out_block_data = out + i;
 
-        q8_quantize_block(inp_block_data, out_block_data);
+        q8_quantize_block(inp_block_data, out_block_data, globs::q8_block_size);
+    }
+    
+    // Quantize the partial last block (i.e it contains < block_size numbers) if it exists.
+    const int remsize = rowsize % block_size;
+    if (remsize != 0) {
+        const float* last_inp_block_data = inp + n_blocks * block_size;
+        Q8Block* last_block = out + n_blocks;
+        q8_quantize_block(last_inp_block_data, last_block, remsize);
     }
 }
 
@@ -112,11 +117,18 @@ void q8_quantize_row_delta(const float* inp, Qint8* out, const float delta, cons
 
 void q8_dequantize_row(const Q8Block* inp, float* out, int rowsize) {
     const int block_size = globs::q8_block_size;
-    GTEN_ASSERT(rowsize % block_size == 0);
     const int n_blocks = rowsize / block_size;
 
     for (int i = 0; i < n_blocks; i++) {
-        q8_dequantize_block(inp + i, out + i * block_size);
+        q8_dequantize_block(inp + i, out + i * block_size, globs::q8_block_size);
+    }
+
+    // De-quantize the partial last block (i.e it contains < block_size numbers) if it exists.
+    const int remsize = rowsize % block_size;
+    if (remsize != 0) {
+        float* last_out_block_data = out + n_blocks * block_size;
+        const Q8Block* last_block = inp + n_blocks;
+        q8_dequantize_block(last_block, last_out_block_data, remsize);
     }
 }
 

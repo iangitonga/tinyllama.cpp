@@ -140,7 +140,7 @@ int main(int argc, char const *argv[])
     int n_predict = 768;
     bool use_greedy_sampler = false;
     float sampling_temp = 0.9f;
-    int topk = 40;
+    int topk = 50;
 
     for (int i = 1; i < argc; i++)
     {
@@ -186,7 +186,7 @@ int main(int argc, char const *argv[])
                 std::cerr << "npred must be greater than 1 and less than 2048.\n";
                 return -1;
             }
-            n_predict = std::min(npred, 2048);
+            n_predict = npred, 2048;
             i += 1; // skip len param
         } else if (arg == "--temp") {
             if (argc <= i+1) {

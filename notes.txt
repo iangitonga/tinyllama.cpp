@@ -6,3 +6,4 @@ TODO:
  - Improve decoding methods.
  - Allow multiple decoding streams i.e multiple users over a network.
  - Add GUI.
+ - add num_tokens/tokens throughput stats.

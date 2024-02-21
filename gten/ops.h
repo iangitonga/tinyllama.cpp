@@ -5,6 +5,10 @@
 #include "tensor.h"
 #include "simd_ops.h"
 
+#if defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
+
 
 namespace gten {
 namespace ops {
@@ -225,7 +229,7 @@ static float vec_dot_product_q8(const Q8Block* inp0, const Q8Block* inp1, const 
     GTEN_ASSERT(vec_size % block_size == 0);
     const int n_blocks = vec_size / block_size;
 
-#ifdef GTEN_SIMD_AVX
+#if defined(__AVX__)
     GTEN_ASSERT(block_size % 16 == 0);
     // Dot product accumulator with 4 slots. The sum of the four accumulators gives the
     // dot product.
@@ -318,7 +322,7 @@ static float vec_dot_product_q8_q4(const Q8Block* inp0, const Q4Block* inp1, con
     GTEN_ASSERT(block_size == globs::q4_block_size && vec_size % block_size == 0);
     const int n_blocks = vec_size / block_size;
 
-#ifdef GTEN_SIMD_AVX
+#if defined(__AVX__)
     GTEN_ASSERT(block_size % 16 == 0);
     // Dot product accumulator with 4 slots. The sum of the four accumulators gives the
     // dot product.
@@ -385,6 +389,63 @@ static float vec_dot_product_q8_q4(const Q8Block* inp0, const Q4Block* inp1, con
     const __m128 dotsum0 = _mm_hadd_ps(dot_accum, dot_accum);
     const __m128 dotsum1 = _mm_hadd_ps(dotsum0, dotsum0);
     const float dot_prod = _mm_cvtss_f32(dotsum1);
+
+#elif defined(__ARM_NEON)
+
+    float32x4_t dot_accum = vdupq_n_f32(0.0f);
+
+    for (int i = 0; i < n_blocks; i++)
+    {
+        const Q8Block* a0 = inp0 + i;
+        const Q4Block* b0 = inp1 + i;
+
+        // Load Q-8 block.
+        const Qint8* a0_data = a0->data;
+        const int8x8_t a00 = vld1_s8(a0_data);
+        const int8x8_t a01 = vld1_s8(a0_data + 8);
+        const int8x8_t a02 = vld1_s8(a0_data + 16);
+        const int8x8_t a03 = vld1_s8(a0_data + 24);
+
+        // Load Q-4 block.
+        const Qint4* b0_data = b0->data;
+        const uint8x8_t b00 = vld1_u8(b0_data);
+        const uint8x8_t b01 = vld1_u8(b0_data + 8);
+
+        // Extract first 16 quants.
+        const int8x8_t b00_high = vreinterpret_s8_u8(vshr_n_u8(b00, 4));
+        const int8x8_t b01_high = vreinterpret_s8_u8(vshr_n_u8(b01, 4));
+        const int8x8_t add_vec = vdup_n_s8(-7);
+        const int8x8_t b04 = vadd_s8(b00_high, add_vec);
+        const int8x8_t b05 = vadd_s8(b01_high, add_vec);
+
+        // Extract last 16 quants.
+        const uint8x8_t and_vec = vdup_n_u8(0b00001111);
+        const int8x8_t b00_low = vreinterpret_s8_u8(vand_u8(b00, and_vec));
+        const int8x8_t b01_low = vreinterpret_s8_u8(vand_u8(b01, and_vec));
+        const int8x8_t b06 = vadd_s8(b00_low, add_vec);
+        const int8x8_t b07 = vadd_s8(b01_low, add_vec);
+
+        const int16x8_t c00 = vmull_s8(a00, b04);
+        const int16x8_t c01 = vmull_s8(a01, b05);
+        const int16x8_t c02 = vmull_s8(a02, b06);
+        const int16x8_t c03 = vmull_s8(a03, b07);
+
+        const int16x8_t c04 = vaddq_s16(c00, c01);
+        const int16x8_t c05 = vaddq_s16(c02, c03);
+
+        const int16x8_t c06 = vaddq_s16(c04, c05);
+        const int16x4_t c06_low = vget_low_s16(c06);
+        const int16x4_t c06_high = vget_high_s16(c06);
+
+        const int32x4_t c07 = vaddl_s16(c06_low, c06_high);
+        const float32x4_t c08 = vcvtq_f32_s32(c07);
+
+        const float32x4_t blk_delta_multiplier = vdupq_n_f32(fp16_to_fp32(a0->delta) * fp16_to_fp32(b0->delta));
+        dot_accum = vaddq_f32(dot_accum, vmulq_f32(c08, blk_delta_multiplier));
+    } 
+
+    const float32x2_t dot_accum_temp = vadd_f32(vget_low_f32(dot_accum), vget_high_f32(dot_accum));
+    const float dot_prod = vget_lane_f32(dot_accum_temp, 0) + vget_lane_f32(dot_accum_temp, 1);
 
 #else
 
@@ -514,27 +575,35 @@ void matmul_2d_impl(const Tensor& inp, const Tensor& w, Tensor& out, const int s
     const Dtype out_dtype = out.dtype();
 
     const int n_ctx = inp.dimsize(0);
-    const int n_embd = inp.dimsize(1);
+    const int d_inp = inp.dimsize(1);
     const int d_out = w.dimsize(0);
     const int inp_st0 = inp.bstride(0);
     const int w_st0 = w.bstride(0);
     const int out_st0 = out.bstride(0); 
 
-    float* out_buf = g_ops_state.buf(d_out);
+    const int block_size = globs::q8_block_size;
+    const int n_blocks = d_out/block_size;
 
+    GTEN_ASSERT(out_dtype == kQint8 || out_dtype == kFloat32);
+    const int out_c0_stride = out_dtype == kQint8 ? sizeof(Q8Block) : block_size*sizeof(float);
+
+    #pragma omp parallel for collapse(2)
     for (int r0 = start_pos; r0 < n_ctx; r0++) {
-        const char* inp_row_data = inp_data + r0*inp_st0;
-
-        #pragma omp parallel for
-        for (int c0 = 0; c0 < d_out; c0++)
+        for (int c0 = 0; c0 < n_blocks; c0++)
         {
-            const char* w_row_data = w_data + c0*w_st0;
-            const float dot_prod = vec_dot_product(inp_row_data, inp_dtype, w_row_data, w_dtype, n_embd);
-            out_buf[c0] = dot_prod;
+            const char* inp_row_data = inp_data + r0*inp_st0;
+
+            float out_buf[block_size];
+            for (int c00 = 0; c00 < block_size; ++c00)
+            {
+                const char* w_row_data = w_data + (c0 * block_size + c00) * w_st0;
+                const float dot_prod = vec_dot_product(inp_row_data, inp_dtype, w_row_data, w_dtype, d_inp);
+                out_buf[c00] = dot_prod;
+            }
+
+            char* out_row_data = out_data + r0*out_st0 + c0*out_c0_stride;
+            write_row_from_float(out_buf, out_row_data, out_dtype, block_size);
         }
-        
-        char* out_row_data = out_data + r0*out_st0;
-        write_row_from_float(out_buf, out_row_data, out_dtype, d_out);
     }
 }
 
@@ -800,6 +869,23 @@ static void add(const Tensor& x0, const Tensor& x1, Tensor& out, const int start
     add_impl(x0, x1, out, start_pos);
 }
 
+/*
+
+All Quantised tensors.
+
+A set of blocks.
+
+d1: h, rows
+d2: rows
+d3: row
+
+h, n_ctx, n_ctx
+
+n_ctx: blocks.
+
+how many blocks.
+
+*/
 
 void qk_masked_softmax(const Tensor& q, const Tensor& k, Tensor& qk_out, float scale_factor, const int start_pos)
 {
@@ -810,6 +896,8 @@ void qk_masked_softmax(const Tensor& q, const Tensor& k, Tensor& qk_out, float s
     const int q_heads = q.dimsize(0);
     const int n_ctx = q.dimsize(1);
     const int d_head = q.dimsize(2);
+    const int k_heads = k.dimsize(0);
+    const int q_heads_per_group = q_heads / k_heads;
 
     const int qst0 = q.bstride(0);
     const int qst1 = q.bstride(1);
@@ -820,9 +908,6 @@ void qk_masked_softmax(const Tensor& q, const Tensor& k, Tensor& qk_out, float s
 
     const Dtype inp_dtype = q.dtype();
     const Dtype out_dtype = qk_out.dtype();
-
-    const int k_heads = k.dimsize(0);
-    const int q_heads_per_group = q_heads / k_heads;
 
     float* out_buf = g_ops_state.buf(n_ctx);
 
@@ -868,72 +953,79 @@ void qk_masked_softmax(const Tensor& q, const Tensor& k, Tensor& qk_out, float s
                 out_buf[i] = qkw / sum_exp;
             }
 
-            if (out_dtype == kQint8) {
-                Qint8* out_data_q = reinterpret_cast<Qint8*>(out_data) + h * qkst0 + qrow * qkst1;
-                const float delta = 1.0f / 127.0f;  // quantization delta where amax=1 because it is softmaxed.
-                q8_quantize_row_delta(out_buf, out_data_q, delta, n_ctx);
-            } else if (out_dtype == kFloat16) {
-                Float16* out_data_f = reinterpret_cast<Float16*>(out_data);
-                write_row_from_float(out_buf, out_data + h * qkst0 + qrow * qkst1, out_dtype, n_ctx);
-            } else { GTEN_ASSERT(false); }
+            char* out_row_data = out_data + h * qkst0 + qrow * qkst1;
+            write_row_from_float(out_buf, out_row_data, out_dtype, n_ctx);
         }
     }
 }
 
-
-void qkv_matmul(const Tensor& qk, const Tensor& v, Tensor& qkv_out, const int start_pos)
+// Transpose and dequantize v.
+void transpose_v(const Tensor& inp, float* out_buf)
 {
-    const char* qk_data = qk.data_ptr<char>();
-    const char* v_data = v.data_ptr<char>();
-    char* out_data = qkv_out.data_ptr<char>();
-
-    const int n_ctx = qk.dimsize(1);
-    const int q_heads = qk.dimsize(0);
-    
-    const int dhead = v.dimsize(1);
-
-    const int v_heads = v.dimsize(0);
-    const int q_heads_per_group = q_heads / v_heads;
-
-    const int qkst0 = qk.stride(0);
-    const int qkst1 = qk.stride(1);
-    // qkv shape: [ctx, head, dhead]
-    const int qkv_st0 = qkv_out.bstride(0);
-
-    const float delta = 1.0f / 127.0f;
-    // out: [c, h, d] nhead, dhead
-    // qkv_st1: dhead
-    // v: n_head, d_head, n_ctx
-
-    const int v_n_embd = v_heads*dhead;
-    float* qk_row_buf = g_ops_state.buf(n_ctx + n_ctx*v_n_embd + q_heads*dhead);
-    float* v_buf = qk_row_buf + n_ctx;
-    float* out_buf = v_buf + n_ctx*v_n_embd; // qh * dh: dh
+    // v.view({n_ctx, kv_n_head, d_head}).permute({1, 2, 0});
+    const char* inp_data = inp.data_ptr<char>();
+    const int n_head = inp.dimsize(0);
+    const int d_head = inp.dimsize(1);
+    const int n_ctx = inp.dimsize(2);
+    const int n_embd = n_head*d_head;
 
     // Dequantize v and transpose it.
-    const int n_blocks = v_n_embd / globs::q8_block_size;
+    const int n_blocks = (n_head*d_head) / globs::q8_block_size;
 
-    if (v.dtype() == kQint8) {
-        for (int i = 0; i < n_ctx; i++) {
+    switch (inp.dtype())
+    {
+        case kQint8:
+        {
+            for (int i = 0; i < n_ctx; i++) {
             for (int j = 0; j < n_blocks; j++) {
-                const Q8Block* blk = reinterpret_cast<const Q8Block*>(v_data) + i * n_blocks + j;
+                const Q8Block* blk = (Q8Block*)inp_data + i * n_blocks + j;
                 const float block_delta = fp16_to_fp32(blk->delta);
                 
                 for (int k = 0; k < globs::q8_block_size; k++) {
                     const int col_idx = j * globs::q8_block_size + k;
-                    v_buf[i + col_idx * n_ctx] = q8_dequantize_single(blk->data[k], block_delta);
+                    out_buf[i + col_idx * n_ctx] = q8_dequantize_single(blk->data[k], block_delta);
                 }
             }   
         }
-    } else if (v.dtype() == kFloat16) {
-        for (int i = 0; i < n_ctx; i++) {
-            for (int j = 0; j < v_n_embd; j++) {
-                v_buf[i + j * n_ctx] = fp16_to_fp32(reinterpret_cast<const Float16*>(v_data)[i * v_n_embd + j]);
+        } break;
+
+        case kFloat16:
+        {
+            for (int i = 0; i < n_ctx; i++) {
+            for (int j = 0; j < n_embd; j++) {
+                out_buf[i + j * n_ctx] = fp16_to_fp32(((Float16*)inp_data)[i * n_embd + j]);
             }
         }
-    } else {
-        GTEN_ASSERT(false);
+        } break;
+        default: {
+            GTEN_ASSERT(false);
+        } break;
     }
+}
+
+void qkv_matmul(const Tensor& qk, const Tensor& v, Tensor& qkv_out, const int start_pos)
+{
+    const char* qk_data = qk.data_ptr<char>();
+    char* out_data = qkv_out.data_ptr<char>();
+
+    const int n_ctx = qk.dimsize(1);
+    const int q_heads = qk.dimsize(0);
+    const int v_heads = v.dimsize(0);
+    const int dhead = v.dimsize(1);
+    const int q_heads_per_group = q_heads / v_heads;
+
+    const int qkst0 = qk.stride(0);
+    const int qkst1 = qk.stride(1);
+    const int qkv_st0 = qkv_out.bstride(0);
+
+    const int v_n_embd = v_heads*dhead;
+    float* qk_row_buf = g_ops_state.buf(n_ctx + n_ctx*v_n_embd + q_heads*dhead);
+    float* v_buf = qk_row_buf + n_ctx;
+    float* out_buf = v_buf + n_ctx*v_n_embd;
+
+    // transpose and dequantize v.
+    /// TODO: Improve this.
+    transpose_v(v, v_buf);
 
     const Dtype inp_dtype = qk.dtype();
     const Dtype out_dtype = qkv_out.dtype();
@@ -941,12 +1033,7 @@ void qkv_matmul(const Tensor& qk, const Tensor& v, Tensor& qkv_out, const int st
     for (int qkr = start_pos; qkr < n_ctx; qkr++) {
         for (int h = 0; h < q_heads; h++) {
             const char* qkr_data = qk_data + (h * qkst0 + qkr * qkst1);  // qk_row_data
-            
-            if (inp_dtype == kQint8) {
-                q8_dequantize_row_delta((Qint8*)qkr_data, qk_row_buf, delta, n_ctx);
-            } else {
-                read_row_to_float(qkr_data, inp_dtype, qk_row_buf, n_ctx);
-            }
+            read_row_to_float(qkr_data, inp_dtype, qk_row_buf, n_ctx);
 
             for (int vc = 0; vc < dhead; vc++) {
                 const float* v_col_buf = v_buf + ((h / q_heads_per_group) * dhead*n_ctx + vc * n_ctx);
@@ -961,6 +1048,9 @@ void qkv_matmul(const Tensor& qk, const Tensor& v, Tensor& qkv_out, const int st
 
 }
 
+
+// transposed_out
+// 12(f32) 6(f16) 3(8-bit) 1.5(4-bit)
 
 static void qkv_attn_impl(const Tensor& q, const Tensor& k, const Tensor& v, Tensor& qk, Tensor& qkv, int max_ctx, const int start_pos)
 {
