@@ -564,7 +564,53 @@ void token_embed(const Tensor& weight, const Tensor& tokens, Tensor& out, const 
 }
 
 
-void matmul_2d_impl(const Tensor& inp, const Tensor& w, Tensor& out, const int start_pos)
+// void matmul_2d_impl(const Tensor& inp, const Tensor& w, Tensor& out, const int start_pos)
+// {
+//     const char* inp_data = inp.data_ptr<char>();
+//     const char* w_data = w.data_ptr<char>(); 
+//     char* out_data = out.data_ptr<char>();
+
+//     const Dtype inp_dtype = inp.dtype();
+//     const Dtype w_dtype = w.dtype();
+//     const Dtype out_dtype = out.dtype();
+
+//     const int n_ctx = inp.dimsize(0);
+//     const int d_inp = inp.dimsize(1);
+//     const int d_out = w.dimsize(0);
+//     const int inp_st0 = inp.bstride(0);
+//     const int w_st0 = w.bstride(0);
+//     const int out_st0 = out.bstride(0); 
+
+//     const int block_size = globs::q8_block_size;
+//     const int n_blocks = d_out/block_size;
+
+//     int out_c0_stride;
+//     if (out_dtype == kQint8) { out_c0_stride = sizeof(Q8Block); }
+//     else if (out_dtype == kFloat16) { out_c0_stride = block_size*sizeof(Float16); }
+//     else if (out_dtype == kFloat32) { out_c0_stride = block_size*sizeof(float); }
+//     else { GTEN_ASSERT(false); }
+
+//     #pragma omp parallel for collapse(2)
+//     for (int r0 = start_pos; r0 < n_ctx; r0++) {
+//         for (int c0 = 0; c0 < n_blocks; c0++)
+//         {
+//             const char* inp_row_data = inp_data + r0*inp_st0;
+
+//             float out_buf[block_size];
+//             for (int c00 = 0; c00 < block_size; ++c00)
+//             {
+//                 const char* w_row_data = w_data + (c0 * block_size + c00) * w_st0;
+//                 const float dot_prod = vec_dot_product(inp_row_data, inp_dtype, w_row_data, w_dtype, d_inp);
+//                 out_buf[c00] = dot_prod;
+//             }
+
+//             char* out_row_data = out_data + r0*out_st0 + c0*out_c0_stride;
+//             write_row_from_float(out_buf, out_row_data, out_dtype, block_size);
+//         }
+//     }
+// }
+
+static void matmul_2d_impl(const Tensor& inp, const Tensor& w, Tensor& out, const int start_pos)
 {
     const char* inp_data = inp.data_ptr<char>();
     const char* w_data = w.data_ptr<char>(); 
@@ -575,38 +621,29 @@ void matmul_2d_impl(const Tensor& inp, const Tensor& w, Tensor& out, const int s
     const Dtype out_dtype = out.dtype();
 
     const int n_ctx = inp.dimsize(0);
-    const int d_inp = inp.dimsize(1);
+    const int n_embd = inp.dimsize(1);
     const int d_out = w.dimsize(0);
     const int inp_st0 = inp.bstride(0);
     const int w_st0 = w.bstride(0);
     const int out_st0 = out.bstride(0); 
 
-    const int block_size = globs::q8_block_size;
-    const int n_blocks = d_out/block_size;
+    float* out_buf = g_ops_state.buf(d_out);
 
-    int out_c0_stride;
-    if (out_dtype == kQint8) { out_c0_stride = sizeof(Q8Block); }
-    else if (out_dtype == kFloat16) { out_c0_stride = block_size*sizeof(Float16); }
-    else if (out_dtype == kFloat32) { out_c0_stride = block_size*sizeof(float); }
-    else { GTEN_ASSERT(false); }
-
-    #pragma omp parallel for collapse(2)
     for (int r0 = start_pos; r0 < n_ctx; r0++) {
-        for (int c0 = 0; c0 < n_blocks; c0++)
+        const char* inp_row_data = inp_data + r0*inp_st0;
+
+#if defined(_OPENMP)
+        #pragma omp parallel for
+#endif
+        for (int c0 = 0; c0 < d_out; c0++)
         {
-            const char* inp_row_data = inp_data + r0*inp_st0;
-
-            float out_buf[block_size];
-            for (int c00 = 0; c00 < block_size; ++c00)
-            {
-                const char* w_row_data = w_data + (c0 * block_size + c00) * w_st0;
-                const float dot_prod = vec_dot_product(inp_row_data, inp_dtype, w_row_data, w_dtype, d_inp);
-                out_buf[c00] = dot_prod;
-            }
-
-            char* out_row_data = out_data + r0*out_st0 + c0*out_c0_stride;
-            write_row_from_float(out_buf, out_row_data, out_dtype, block_size);
+            const char* w_row_data = w_data + c0*w_st0;
+            const float dot_prod = vec_dot_product(inp_row_data, inp_dtype, w_row_data, w_dtype, n_embd);
+            out_buf[c0] = dot_prod;
         }
+        
+        char* out_row_data = out_data + r0*out_st0;
+        write_row_from_float(out_buf, out_row_data, out_dtype, d_out);
     }
 }
 
