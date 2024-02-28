@@ -584,8 +584,11 @@ void matmul_2d_impl(const Tensor& inp, const Tensor& w, Tensor& out, const int s
     const int block_size = globs::q8_block_size;
     const int n_blocks = d_out/block_size;
 
-    GTEN_ASSERT(out_dtype == kQint8 || out_dtype == kFloat32);
-    const int out_c0_stride = out_dtype == kQint8 ? sizeof(Q8Block) : block_size*sizeof(float);
+    int out_c0_stride;
+    if (out_dtype == kQint8) { out_c0_stride = sizeof(Q8Block); }
+    else if (out_dtype == kFloat16) { out_c0_stride = block_size*sizeof(Float16); }
+    else if (out_dtype == kFloat32) { out_c0_stride = block_size*sizeof(float); }
+    else { GTEN_ASSERT(false); }
 
     #pragma omp parallel for collapse(2)
     for (int r0 = start_pos; r0 < n_ctx; r0++) {
